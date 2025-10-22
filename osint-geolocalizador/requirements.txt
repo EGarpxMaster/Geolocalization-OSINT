@@ -1,0 +1,14 @@
+# App
+streamlit
+streamlit-folium
+folium
+Pillow
+
+# ML
+torch
+transformers
+tqdm
+
+# OCR (experimental)
+pytesseract
+opencv-python-headless
