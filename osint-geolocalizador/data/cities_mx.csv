@@ -1,0 +1,67 @@
+name,state,lat,lon,tags
+Ciudad de México,CDMX,19.432608,-99.133209,skyline|downtown
+Guadalajara,Jalisco,20.659699,-103.349609,colonial|downtown
+Monterrey,Nuevo León,25.686613,-100.316116,skyline|mountains|downtown
+Puebla,Puebla,19.041296,-98.206200,colonial|downtown
+Tijuana,Baja California,32.514946,-117.038246,border|skyline
+León,Guanajuato,21.122520,-101.684784,downtown
+Ciudad Juárez,Chihuahua,31.690363,-106.424547,border
+Zapopan,Jalisco,20.723560,-103.384790,urban
+Mérida,Yucatán,20.967370,-89.592586,colonial|downtown
+Cancún,Quintana Roo,21.161908,-86.851528,beach|skyline
+Querétaro,Querétaro,20.588793,-100.389888,colonial|downtown
+Toluca,Estado de México,19.282609,-99.655666,urban
+Chihuahua,Chihuahua,28.632996,-106.069100,urban
+Aguascalientes,Aguascalientes,21.885256,-102.291567,downtown
+Morelia,Michoacán,19.700780,-101.186000,colonial
+Hermosillo,Sonora,29.072967,-110.955919,desert
+Saltillo,Coahuila,25.426540,-100.995510,urban
+Veracruz,Veracruz,19.173773,-96.134224,port|beach
+Acapulco,Guerrero,16.853109,-99.823653,beach|bay
+Oaxaca,Oaxaca,17.073184,-96.726588,colonial
+San Luis Potosí,San Luis Potosí,22.156469,-100.985540,colonial
+Playa del Carmen,Quintana Roo,20.629558,-87.073885,beach
+Culiacán,Sinaloa,24.809064,-107.394013,urban
+Torreón,Coahuila,25.542844,-103.406786,desert
+Tepic,Nayarit,21.508458,-104.895691,urban
+Villahermosa,Tabasco,17.986889,-92.930279,tropical
+Tuxtla Gutiérrez,Chiapas,16.753055,-93.115654,urban
+Campeche,Campeche,19.845944,-90.523071,colonial|coastal
+La Paz,Baja California Sur,24.142642,-110.312753,beach|bay
+Cabo San Lucas,Baja California Sur,22.890533,-109.916740,beach
+San José del Cabo,Baja California Sur,23.063918,-109.702144,beach
+Mazatlán,Sinaloa,23.232900,-106.406180,beach|malecón
+Puerto Vallarta,Jalisco,20.653407,-105.225331,beach|bay
+Colima,Colima,19.243333,-103.724167,urban
+Manzanillo,Colima,19.112812,-104.338653,port|beach
+Xalapa,Veracruz,19.541967,-96.915528,colonial
+Coatzacoalcos,Veracruz,18.150833,-94.437500,port
+Poza Rica,Veracruz,20.533150,-97.459460,urban
+Tampico,Tamaulipas,22.233105,-97.861099,port
+Matamoros,Tamaulipas,25.869029,-97.502738,border
+Reynosa,Tamaulipas,26.092222,-98.277778,border
+Nuevo Laredo,Tamaulipas,27.476289,-99.516389,border
+Nogales,Sonora,31.308620,-110.942172,border
+Ensenada,Baja California,31.866742,-116.596371,port|coastal
+Mexicali,Baja California,32.624538,-115.452263,desert|border
+Tecate,Baja California,32.568889,-116.636111,border
+Pachuca,Hidalgo,20.101060,-98.756887,urban
+Tlaxcala,Tlaxcala,19.318889,-98.237500,colonial
+Cuernavaca,Morelos,18.924209,-99.221565,urban
+Guanajuato,Guanajuato,21.019014,-101.257359,colonial
+San Miguel de Allende,Guanajuato,20.914389,-100.743889,colonial
+Celaya,Guanajuato,20.523333,-100.815000,urban
+Irapuato,Guanajuato,20.676667,-101.356389,urban
+Salamanca,Guanajuato,20.570000,-101.193889,urban
+Uruapan,Michoacán,19.413611,-102.062778,urban
+Zamora,Michoacán,19.984167,-102.283333,urban
+Tepatitlán de Morelos,Jalisco,20.811111,-102.763611,urban
+Tehuacán,Puebla,18.462778,-97.393333,urban
+Orizaba,Veracruz,18.851944,-97.099444,colonial
+Córdoba,Veracruz,18.885833,-96.925278,colonial
+Boca del Río,Veracruz,19.106944,-96.106389,beach
+Tulum,Quintana Roo,20.211944,-87.465278,beach
+Cozumel,Quintana Roo,20.423000,-86.922343,island|beach
+Huatulco,Oaxaca,15.768333,-96.135000,beach|bay
+Puerto Escondido,Oaxaca,15.870278,-97.077778,beach|surf
+Taxco,Guerrero,18.556389,-99.605556,colonial
