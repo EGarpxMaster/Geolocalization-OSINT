@@ -1,4 +1,4 @@
-# Geolocalization-OSINT (México)
+# Geolocalization-OSINT
 
 Aplicación de **Streamlit** que estima la **ubicación probable de una fotografía** combinando señales visuales (modelo local), **texto detectado por OCR** (Tesseract) y capas geográficas en un **mapa interactivo** (Folium).  
 Diseñada para **prácticas académicas de ciberinteligencia**: inspección de evidencias, generación de hipótesis y documentación reproducible.
