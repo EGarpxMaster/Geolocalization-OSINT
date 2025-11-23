@@ -3,6 +3,7 @@ streamlit
 streamlit-folium
 folium
 Pillow
+pandas
 
 # ML
 torch
@@ -12,3 +13,8 @@ tqdm
 # OCR (experimental)
 pytesseract
 opencv-python-headless
+
+# Data mining (100% gratuito)
+requests
+beautifulsoup4
+lxml
