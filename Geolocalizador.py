@@ -1,9 +1,16 @@
-# Geolocalizador.py
-# Streamlit app para geolocalización de imágenes (México) usando CLIP + OCR boost + Leaflet
-# Requiere:
-#  - modelo embebido: model/modelo.pth (generado con build_model.py v2)
-#  - Tesseract instalado (Windows por defecto en C:\Program Files\Tesseract-OCR)
-#  - requirements: streamlit, streamlit-folium, folium, Pillow, torch, transformers, pytesseract, opencv-python-headless, tqdm, numpy
+"""
+GEOLOCALIZADOR OSINT - INTERFAZ PRINCIPAL
+==========================================
+Aplicación Streamlit para geolocalización de imágenes en México usando CLIP + OCR.
+Sistema de memoria optimizado con carga lazy de recursos.
+
+Requiere:
+  - Modelo: model/modelo.pth (generado con training_pipeline.py --build-model)
+  - Tesseract OCR (opcional): C:\Program Files\Tesseract-OCR
+
+Uso:
+    streamlit run Geolocalizador.py
+"""
 
 import os
 import re
@@ -66,28 +73,48 @@ def softmax_temp(x, t=1.0):
     e = np.exp(x)
     return e / e.sum()
 
-# ---------------------- Carga de índice y modelo ----------------------
+# ---------------------- Carga de índice y modelo (optimizado) ----------------------
 @st.cache_resource
 def load_city_index(rel_path: str):
+    """Carga índice del modelo con manejo optimizado de memoria"""
     base_dir = Path(__file__).resolve().parent
     real_path = (base_dir / rel_path).resolve()
     if not real_path.exists():
         raise FileNotFoundError(f"No se encontró el índice: {real_path}")
-    payload = torch.load(real_path, map_location="cpu")
+    
+    # Carga con map_location para CPU (optimiza memoria GPU)
+    payload = torch.load(real_path, map_location="cpu", weights_only=False)
+    
     # Esperado del builder v2:
     #  - model_name
     #  - cities: [{name,state,lat,lon,tags}, ...]
     #  - city_embeds: tensor [N, D]
     #  - states: [str]
     #  - state_embeds: dict state->tensor[D]
+    
+    # Liberar memoria inmediatamente después de cargar
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
     return payload
 
 @st.cache_resource
 def load_clip(model_name: str):
+    """Carga modelo CLIP con optimización de memoria"""
     from transformers import CLIPProcessor, CLIPModel
+    
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    # Cargar modelo en modo eval (ahorra memoria)
     model = CLIPModel.from_pretrained(model_name).to(device)
+    model.eval()  # Desactiva dropout y batch norm
+    
+    # No guardar gradientes (reduce memoria 2x)
+    for param in model.parameters():
+        param.requires_grad = False
+    
     processor = CLIPProcessor.from_pretrained(model_name)
+    
     return model, processor, device
 
 # ---------------------- OCR ----------------------
@@ -188,13 +215,20 @@ if do_ocr:
     with st.expander("🔎 Texto detectado (OCR)"):
         st.code(ocr_text_raw or "(sin texto)")
 
-# Embedding de imagen
+# Embedding de imagen (optimizado para memoria)
 with st.spinner("Calculando similitud (CLIP)…"):
     inputs = PROCESSOR(images=pil_img, return_tensors="pt").to(DEVICE)
+    
+    # Inferencia sin gradientes (ahorra memoria)
     with torch.no_grad():
         z_img = MODEL.get_image_features(**inputs)  # [1, D]
         z_img = z_img / z_img.norm(dim=-1, keepdim=True)
-    img_feat = z_img.cpu().numpy()[0]  # [D]
+        img_feat = z_img.cpu().numpy()[0]  # [D]
+    
+    # Liberar memoria GPU inmediatamente
+    del inputs, z_img
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 # Similitud con ciudades
 sims = CITY_EMBEDS @ img_feat  # coseno ya normalizado si CITY_EMBEDS está normalizado

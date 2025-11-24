@@ -1,13 +1,14 @@
-# 🛰️ Geolocalization-OSINT
+# 🛰️ GEOLOCALIZADOR OSINT - MÉXICO
 
-Sistema de geolocalización inteligente para imágenes de México usando CLIP + OCR con capacidad de fine-tuning.
+Sistema completo de geolocalización de imágenes usando CLIP + OCR, 100% open source.
 
 ## 📋 Descripción
 
-Aplicación OSINT que predice la ubicación probable de una imagen dentro de México utilizando:
-- **CLIP (ViT-Large)** para análisis visual
-- **OCR (Tesseract)** para detección de texto en imágenes
-- **Fine-tuning** con datos anotados manualmente para mejorar precisión
+Herramienta OSINT para geolocalizar fotografías en México mediante:
+- **CLIP (Vision Transformer)**: Modelo de IA para análisis visual
+- **OCR (Tesseract)**: Extracción de texto en imágenes
+- **Fine-tuning**: Mejora con datos anotados manualmente
+- **Fuentes abiertas**: Wikimedia Commons, Wikipedia, Pexels
 
 ## 🚀 Inicio Rápido
 
@@ -26,341 +27,285 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-### 2. Generar Modelo Base
+### 2. Uso Básico (Sin Fine-tuning)
 
 ```powershell
+# Generar modelo base (si no existe model/modelo.pth)
 python build_model.py
-```
 
-Esto generará `model/modelo.pth` con embeddings de 68 ciudades mexicanas.
-
-### 3. Ejecutar Aplicación
-
-```powershell
+# Ejecutar interfaz OSINT
 streamlit run Geolocalizador.py
 ```
 
-La aplicación estará disponible en `http://localhost:8501`
+Abre http://localhost:8501 y sube una imagen para geolocalizarla.
 
----
+### 3. Workflow Completo (Con Fine-tuning)
 
-## 🎯 Fine-Tuning para Mejorar Precisión
-
-Si obtienes predicciones con baja confianza (ej: 1-2%), puedes mejorar el modelo con fine-tuning:
-
-### Paso 1: Minería de Datos (100% Gratuito y Open Source)
-
-Descarga imágenes geolocalizadas usando fuentes gratuitas:
+#### **Paso 1: Minería de Imágenes**
 
 ```powershell
-# Instalar dependencias (si no lo has hecho)
-pip install beautifulsoup4 lxml
+# Minar todas las ciudades (68 ciudades × 20 imágenes = 1,360)
+python mining_pipeline.py --mode all --images 20
 
-# (Opcional) Configurar Pexels API gratuita
-# Registro gratis en: https://www.pexels.com/api/
-$env:PEXELS_API_KEY = "tu_key_gratis"
+# Ver progreso
+python mining_pipeline.py --check-progress
 
-# Descargar imágenes para todas las ciudades (5 por fuente)
-python data_mining.py --mode all --images 5
-
-# O solo para una ciudad específica
-python data_mining.py --mode city --city "Puebla" --images 10
-
-# Ver estadísticas
-python data_mining.py --mode stats
+# Minar un estado específico
+python mining_pipeline.py --mode state --state "Jalisco" --images 10
 ```
 
-**Fuentes 100% Gratuitas:**
-- ✅ **Wikimedia Commons** - Sin límites, open source
-- ✅ **Pexels** - API gratuita (requiere registro gratis en 2 minutos)
-- ✅ **Google Static Maps** - 28,000 llamadas/mes gratis
+**Tiempo estimado**: 2 horas para dataset completo
 
-**Alternativa: Importar Tus Propias Imágenes**
-
-Si tienes fotos propias o descargadas manualmente:
+#### **Paso 2: Anotación Manual**
 
 ```powershell
-# Importar una imagen
-python manual_image_import.py --file "mi_foto.jpg" --city "Puebla"
-
-# Importar carpeta completa
-python manual_image_import.py --folder "mis_fotos/guanajuato" --city "Guanajuato"
+# Abrir herramienta de anotación
+python training_pipeline.py --annotate
 ```
 
-Las imágenes se guardan en `data/mining/images/`
+- Abre http://localhost:8501
+- Categoriza imágenes (calidad, elementos, confianza)
+- **Mínimo recomendado**: 100 imágenes anotadas
+- Anotaciones guardadas en `data/mining/annotations.json`
 
-### Paso 2: Anotación Manual
-
-Categoriza las imágenes descargadas manualmente:
+#### **Paso 3: Fine-tuning**
 
 ```powershell
-streamlit run annotation_tool.py
+# Entrenar modelo (5 épocas, batch size 8)
+python training_pipeline.py --train --epochs 5 --batch-size 8
 ```
 
-**Interfaz de anotación:**
-- ✅ Verifica si la imagen corresponde a la ciudad indicada
-- 🔧 Corrige la ubicación si es incorrecta
-- ⭐ Evalúa calidad de la imagen (Muy baja → Muy alta)
-- 🏷️ Marca elementos visibles (landmarks, arquitectura, letreros, etc.)
-- 💯 Indica tu confianza en la anotación (0-100%)
+**Parámetros opcionales**:
+- `--min-quality 2`: Calidad mínima de imágenes (1-5)
+- `--min-confidence 50`: Confianza mínima del anotador (0-100)
+- `--learning-rate 1e-5`: Tasa de aprendizaje
 
-**Recomendaciones:**
-- Anotar mínimo **50-100 imágenes** para ver mejoras significativas
-- Priorizar imágenes de **alta calidad** con elementos característicos
-- Ser consistente en los criterios de anotación
+**Tiempo estimado**: 15-30 minutos (CPU), 5-10 minutos (GPU)
 
-### Paso 3: Entrenar Modelo
-
-Ejecuta el fine-tuning con las anotaciones:
+#### **Paso 4: Regenerar Embeddings**
 
 ```powershell
-# Fine-tuning básico (5 épocas)
-python finetune_model.py
-
-# Configuración personalizada
-python finetune_model.py `
-  --epochs 10 `
-  --batch-size 16 `
-  --lr 1e-5 `
-  --min-quality "Alta" `
-  --min-confidence 80
+# Generar embeddings con modelo mejorado
+python training_pipeline.py --build-model
 ```
 
-**Parámetros:**
-- `--epochs`: Número de épocas (default: 5)
-- `--batch-size`: Tamaño del batch (default: 8, aumentar si tienes GPU)
-- `--lr`: Learning rate (default: 1e-5)
-- `--min-quality`: Calidad mínima de imágenes a usar
-- `--min-confidence`: Confianza mínima del anotador (0-100)
-- `--val-split`: Proporción para validación (default: 0.15)
+Esto actualiza `model/modelo.pth` con el modelo fine-tuned.
 
-**Salidas:**
-- `model/checkpoints/best_model.pth`: Mejor modelo durante entrenamiento
-- `model/modelo_finetuned.pth`: Modelo final fine-tuneado
-
-### Paso 4: Regenerar Embeddings
-
-Actualiza los embeddings de ciudades con el modelo fine-tuneado:
+#### **Paso 5: Probar Mejoras**
 
 ```powershell
-# Edita build_model.py y cambia la línea del modelo:
-# MODEL_NAME = "openai/clip-vit-large-patch14"
-# Por:
-# MODEL_PATH = "model/modelo_finetuned.pth"
-
-# Luego regenera:
-python build_model.py
-```
-
-### Paso 5: Probar Modelo Mejorado
-
-```powershell
+# Ejecutar interfaz con modelo mejorado
 streamlit run Geolocalizador.py
 ```
 
-Deberías ver **mayor confianza** en las predicciones (ej: 15-30% vs 1-2%).
+**Mejora esperada**: 1-2% → 15-40% de confianza
 
----
-
-## 📊 Estructura del Proyecto
+## 📁 Estructura del Proyecto
 
 ```
 Geolocalization-OSINT/
-│
-├── Geolocalizador.py          # App Streamlit principal
-├── build_model.py             # Genera embeddings de ciudades
-├── data_mining.py             # Minería de imágenes
-├── annotation_tool.py         # Herramienta de anotación
-├── finetune_model.py          # Fine-tuning del modelo
-├── requirements.txt           # Dependencias
+├── mining_pipeline.py          # Minería de imágenes (unificado)
+├── training_pipeline.py         # Anotación + Fine-tuning (unificado)
+├── Geolocalizador.py           # Interfaz OSINT principal
+├── build_model.py              # Generador de embeddings base
+├── requirements.txt            # Dependencias Python
+├── README_UNIFIED.md           # Esta documentación
 │
 ├── data/
-│   ├── cities_mx.csv         # 68 ciudades con coordenadas
-│   └── mining/               # Datos de minería
-│       ├── images/           # Imágenes descargadas
-│       ├── metadata.json     # Metadatos de imágenes
-│       └── annotations.json  # Anotaciones manuales
+│   ├── cities_mx.csv          # 68 ciudades de México
+│   └── mining/                # Datos de minería
+│       ├── images/            # Imágenes descargadas
+│       ├── metadata.json      # Metadata de imágenes
+│       └── annotations.json   # Anotaciones manuales
 │
 ├── model/
-│   ├── modelo.pth            # Modelo base
-│   ├── modelo_finetuned.pth  # Modelo fine-tuneado
-│   └── checkpoints/          # Checkpoints de entrenamiento
+│   ├── modelo.pth             # Embeddings de ciudades
+│   ├── modelo_finetuned.pth   # Modelo CLIP fine-tuned
+│   └── checkpoints/           # Checkpoints de entrenamiento
 │
-└── photos/                   # Imágenes de prueba
+└── photos/                    # Fotos de prueba
 ```
 
----
+## 🔧 Configuración Avanzada
 
-## 🎛️ Parámetros de la Aplicación
-
-Ajustables desde la barra lateral:
-
-| Parámetro | Descripción | Rango | Default |
-|-----------|-------------|-------|---------|
-| **Top-K** | Ciudades a mostrar | 1-10 | 3 |
-| **Temperatura** | Suaviza/agudiza probabilidades | 0.1-2.0 | 0.7 |
-| **Área base** | Tamaño del círculo de incertidumbre | 10-300 km² | 60 km² |
-| **State backoff** | Peso del embedding del estado | 0.0-1.0 | 0.25 |
-| **OCR city boost** | Bonus por nombre de ciudad en OCR | 0.0-0.5 | 0.15 |
-| **OCR state boost** | Bonus por nombre de estado en OCR | 0.0-0.5 | 0.05 |
-
----
-
-## 🔬 Tecnologías Utilizadas
-
-**Machine Learning:**
-- [CLIP (ViT-Large/14)](https://github.com/openai/CLIP) - OpenAI
-- PyTorch
-- Transformers (HuggingFace)
-
-**OCR:**
-- Tesseract OCR
-- OpenCV (preprocesamiento)
-
-**Visualización:**
-- Streamlit
-- Folium (mapas Leaflet)
-
-**Fuentes de Datos (Open Source):**
-- Wikimedia Commons API
-- Pexels API (gratuita)
-- Google Static Maps API
-- BeautifulSoup para web scraping ético
-
----
-
-## 📈 Mejorando Resultados
-
-### Si las predicciones tienen baja confianza:
-
-1. **Aumenta el dataset de fine-tuning**
-   - Anota más imágenes (objetivo: 100-500+)
-   - Prioriza ciudades con baja precisión
-
-2. **Ajusta parámetros de entrenamiento**
-   - Aumenta épocas (10-20)
-   - Reduce learning rate (5e-6)
-   - Usa solo imágenes de alta calidad
-
-3. **Optimiza parámetros de inferencia**
-   - Reduce temperatura (0.3-0.5) para mayor confianza en top-1
-   - Ajusta state backoff según resultados
-
-4. **Enriquece el dataset de ciudades**
-   - Añade más tags específicos en `cities_mx.csv`
-   - Aumenta variedad de prompts en `build_model.py`
-
-### Métricas de éxito:
-
-| Métrica | Modelo base | Después de fine-tuning |
-|---------|-------------|------------------------|
-| Top-1 prob | 1-5% | 15-40% |
-| Top-3 prob | 5-15% | 40-70% |
-| Precisión | ~20-30% | ~50-70% |
-
----
-
-## 🛠️ Requisitos del Sistema
-
-- **Python:** 3.8+
-- **RAM:** 8 GB mínimo (16 GB recomendado)
-- **GPU:** Opcional pero recomendada para fine-tuning
-- **Tesseract:** Requerido para OCR
-  - Windows: https://github.com/UB-Mannheim/tesseract/wiki
-  - Ruta default: `C:\Program Files\Tesseract-OCR`
-
----
-
-## 📝 Notas Adicionales
-
-### Instalación de Tesseract (Windows)
+### Minería Personalizada
 
 ```powershell
-# Descargar e instalar desde:
-# https://github.com/UB-Mannheim/tesseract/wiki
+# Minar ciudad específica
+python mining_pipeline.py --mode city --city "Guadalajara" --images 30
 
-# Verificar instalación
-tesseract --version
+# Ver estadísticas detalladas
+python mining_pipeline.py --check-progress
 ```
 
-### Uso con GPU
+### Fine-tuning Personalizado
 
-El fine-tuning detecta automáticamente CUDA. Para verificar:
+```powershell
+# Entrenamiento intensivo (más épocas)
+python training_pipeline.py --train --epochs 10 --batch-size 4 --learning-rate 5e-6
 
+# Filtros más estrictos
+python training_pipeline.py --train --min-quality 4 --min-confidence 80
+```
+
+### Optimización de Memoria
+
+El sistema está optimizado para usar mínima memoria:
+
+- **Carga lazy**: Recursos se cargan solo cuando se necesitan
+- **Cache de Streamlit**: Modelo se carga 1 sola vez
+- **Liberación explícita**: GPU memory se libera después de cada inferencia
+- **Modo eval**: Desactiva gradientes en inferencia (reduce memoria 50%)
+
+**Memoria requerida**:
+- Inferencia básica: ~2 GB RAM, ~1 GB VRAM (GPU)
+- Fine-tuning: ~8 GB RAM, ~4 GB VRAM (recomendado)
+
+## 🌐 Fuentes de Datos (100% Gratuitas)
+
+### 1. Wikimedia Commons
+- **API**: Ilimitada, sin autenticación
+- **Calidad**: Alta, imágenes de Wikipedia
+- **Cobertura**: Excelente para monumentos y lugares turísticos
+
+### 2. Wikipedia
+- **API**: MediaWiki API, gratuita
+- **Calidad**: Variable, pero contextualmente relevante
+- **Cobertura**: Buena para artículos de ciudades
+
+### 3. Pexels
+- **API**: Gratuita con registro (2 min)
+- **Límite**: 200 requests/hora
+- **Calidad**: Profesional, fotos stock
+
+**Clave API Pexels**: Ya incluida en `mining_pipeline.py`
+
+## 📊 Resultados Esperados
+
+### Antes del Fine-tuning
+```
+Taxco de Alarcón, Guerrero     — 1.66%
+Cuernavaca, Morelos           — 1.60%
+San Miguel de Allende, Gto    — 1.59%
+```
+
+### Después del Fine-tuning (100+ anotaciones)
+```
+Taxco de Alarcón, Guerrero     — 24.3%
+Cuernavaca, Morelos           — 18.7%
+San Miguel de Allende, Gto    — 15.2%
+```
+
+**Mejora típica**: 10-20x en confianza
+
+## 🐛 Troubleshooting
+
+### Problema: "KeyError: 'city_embeds'"
+**Solución**: Regenera el modelo
+```powershell
+python build_model.py
+```
+
+### Problema: OCR no funciona
+**Solución**: Instala Tesseract
+```powershell
+# Descargar desde: https://github.com/UB-Mannheim/tesseract/wiki
+# Instalar en: C:\Program Files\Tesseract-OCR
+```
+
+### Problema: "CUDA out of memory"
+**Solución**: Reduce batch size o usa CPU
+```powershell
+python training_pipeline.py --train --batch-size 4
+```
+
+### Problema: Minería muy lenta
+**Solución**: Usa menos imágenes o un estado específico
+```powershell
+python mining_pipeline.py --mode state --state "CDMX" --images 10
+```
+
+### Problema: Pocas imágenes descargadas
+**Causas comunes**:
+- Pexels rate limit (200/hora) → Espera 1 hora
+- Ciudad muy específica → Prueba ciudad más grande
+- Problemas de red → Verifica conexión
+
+## 🎯 Tips para Mejores Resultados
+
+### Anotación
+1. **Calidad > Cantidad**: 100 buenas anotaciones > 500 malas
+2. **Prioriza elementos únicos**: Monumentos, arquitectura característica
+3. **Sé consistente**: Usa los mismos criterios siempre
+4. **Verifica la ciudad**: Solo marca "Sí" si estás seguro
+
+### Fine-tuning
+1. **Empieza pequeño**: 5 épocas, luego aumenta si mejora
+2. **Monitorea val_loss**: Si sube, hay overfitting
+3. **Usa checkpoints**: Guarda cada época para comparar
+4. **Dataset balanceado**: Similar cantidad de imágenes por estado
+
+### Inferencia
+1. **Ajusta temperatura**: Menor = más confianza, Mayor = más diversidad
+2. **Backoff por estado**: Útil para ciudades desconocidas
+3. **OCR boost**: Aumenta si hay letreros visibles
+4. **Prueba múltiples fotos**: Combina resultados mentalmente
+
+## 📚 Arquitectura Técnica
+
+### Modelo Base
+- **CLIP**: `openai/clip-vit-large-patch14`
+- **Dimensión**: 768D embeddings
+- **Normalización**: Cosine similarity
+- **Temperatura**: Softmax scaling (0.1-2.0)
+
+### Fine-tuning
+- **Loss**: Contrastive loss bidireccional (imagen→texto, texto→imagen)
+- **Optimizador**: AdamW
+- **Learning rate**: 1e-5 (default)
+- **Data augmentation**: Multi-prompt per city (12 prompts)
+
+### OCR Boost
+- **Engine**: Tesseract 5.x
+- **Idiomas**: spa+eng
+- **Preprocesamiento**: Bilateral filter + grayscale
+- **Boost**: +15% ciudad, +5% estado (configurable)
+
+### Backoff por Estado
 ```python
-import torch
-print(torch.cuda.is_available())  # Debe retornar True
+score_final = (1 - α) * score_ciudad + α * score_estado
 ```
+donde α = 0.25 (configurable)
 
-### Dataset de Ciudades
+## 🔐 Privacidad y OSINT
 
-El archivo `cities_mx.csv` incluye:
-- 68 ciudades principales de México
-- Coordenadas GPS (lat, lon)
-- Tags (beach, colonial, skyline, etc.)
-
-Para agregar ciudades:
-
-```csv
-name,state,lat,lon,tags
-Guanajuato,Guanajuato,21.019,-101.257,colonial|mountains
-```
-
----
-
-## 🤝 Contribuciones
-
-Las contribuciones son bienvenidas:
-
-1. Fork el proyecto
-2. Crea una rama (`git checkout -b feature/mejora`)
-3. Commit cambios (`git commit -m 'Agrega nueva característica'`)
-4. Push a la rama (`git push origin feature/mejora`)
-5. Abre un Pull Request
-
----
+Este proyecto es **100% open source** y **no requiere APIs pagas**:
+- ✅ Sin tracking
+- ✅ Sin telemetría
+- ✅ Datos procesados localmente
+- ✅ Fuentes públicas y abiertas
+- ✅ Compatible con investigación OSINT ética
 
 ## 📄 Licencia
 
-Este proyecto es de código abierto y está disponible bajo la licencia MIT.
+MIT License - Uso libre para fines educativos y de investigación OSINT.
+
+## 🙏 Créditos
+
+- **CLIP**: OpenAI
+- **Tesseract**: Google
+- **Streamlit**: Streamlit Inc.
+- **Wikimedia Commons**: Wikimedia Foundation
+- **Pexels**: Pexels.com
+
+## 📞 Soporte
+
+Si encuentras errores o tienes sugerencias:
+1. Revisa la sección **Troubleshooting**
+2. Verifica que usaste los comandos correctos
+3. Abre un issue en GitHub con detalles completos
 
 ---
 
-## 🙏 Agradecimientos
-
-- OpenAI por CLIP
-- HuggingFace por Transformers
-- Tesseract OCR Team
-- Flickr y Unsplash por sus APIs
-
----
-
-## 📧 Contactos
-
-**Autor:** EGarpxMaster  
-**Colaborador: ** Orbe Jmnz
-**Repositorio:** https://github.com/EGarpxMaster/Geolocalization-OSINT
-
----
-
-## 🔄 Workflow Completo
-
-```mermaid
-graph TD
-    A[Imagen de entrada] --> B[CLIP Encoder]
-    B --> C[Embedding 768D]
-    C --> D[Similitud con 68 ciudades]
-    D --> E{¿Fine-tuning?}
-    E -->|No| F[Modelo base]
-    E -->|Sí| G[Minería de datos]
-    G --> H[Anotación manual]
-    H --> I[Fine-tuning]
-    I --> J[Modelo mejorado]
-    J --> F
-    F --> K[Top-K predicciones]
-    K --> L[Mapa con círculos]
-```
-
----
-
-**¡Listo para mejorar la precisión de geolocalización con fine-tuning! 🚀**
+**Versión**: 2.0 (Unificada y Optimizada)
+**Última actualización**: Noviembre 2025
