@@ -335,9 +335,10 @@ Este proyecto es de código abierto y está disponible bajo la licencia MIT.
 
 ---
 
-## 📧 Contacto
+## 📧 Contactos
 
 **Autor:** EGarpxMaster  
+**Colaborador: ** Orbe Jmnz
 **Repositorio:** https://github.com/EGarpxMaster/Geolocalization-OSINT
 
 ---
