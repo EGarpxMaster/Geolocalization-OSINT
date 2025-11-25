@@ -39,6 +39,7 @@ DATA_DIR = BASE_DIR / "data"
 MINING_DIR = DATA_DIR / "mining"
 IMAGES_DIR = MINING_DIR / "images"
 METADATA_FILE = MINING_DIR / "metadata.json"
+METADATA_CSV = MINING_DIR / "metadata.csv"
 ANNOTATIONS_FILE = MINING_DIR / "annotations.json"
 ANNOTATIONS_CSV = MINING_DIR / "annotations.csv"
 CITIES_CSV = DATA_DIR / "cities_mx.csv"
@@ -48,6 +49,64 @@ CHECKPOINT_DIR = MODEL_DIR / "checkpoints"
 # Crear directorios
 MODEL_DIR.mkdir(exist_ok=True)
 CHECKPOINT_DIR.mkdir(exist_ok=True)
+
+# ============================================================================
+# FUNCIONES DE UTILIDAD
+# ============================================================================
+
+def load_metadata_from_csv():
+    """Carga metadata desde CSV"""
+    images = []
+    try:
+        with open(METADATA_CSV, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                images.append({
+                    'filename': row['filename'],
+                    'source': row['source'],
+                    'photo_id': row.get('photo_id', ''),
+                    'city': row['city'],
+                    'state': row['state'],
+                    'city_target': row['city'],
+                    'state_target': row['state'],
+                    'lat': float(row['lat']) if row['lat'] else 0.0,
+                    'lon': float(row['lon']) if row['lon'] else 0.0,
+                    'url': row.get('url', ''),
+                    'title': row.get('title', ''),
+                    'photographer': row.get('photographer', ''),
+                    'local_path': str(IMAGES_DIR / row['filename'])
+                })
+    except Exception as e:
+        st.error(f"Error cargando CSV: {e}")
+    return images
+
+def load_metadata_from_json():
+    """Carga metadata desde JSON (fallback)"""
+    images = []
+    try:
+        with open(METADATA_FILE, 'r', encoding='utf-8') as f:
+            metadata = json.load(f)
+        
+        # Estructura simple: metadata['images']
+        if 'images' in metadata and isinstance(metadata['images'], list):
+            images = metadata['images']
+        
+        # Estructura compleja: cities -> state -> city -> images
+        elif 'cities' in metadata:
+            for state_data in metadata['cities'].values():
+                if isinstance(state_data, dict):
+                    for city_data in state_data.values():
+                        if isinstance(city_data, dict) and 'images' in city_data:
+                            images.extend(city_data['images'])
+        
+        # Normalizar filenames
+        for img in images:
+            if isinstance(img, dict):
+                if 'filename' not in img and 'local_path' in img:
+                    img['filename'] = Path(img['local_path']).name
+    except Exception as e:
+        st.error(f"Error cargando JSON: {e}")
+    return images
 
 # ============================================================================
 # INTERFAZ PRINCIPAL STREAMLIT
@@ -76,7 +135,12 @@ def main_interface():
         st.divider()
         
         # Mostrar stats generales
-        if METADATA_FILE.exists():
+        if METADATA_CSV.exists():
+            with open(METADATA_CSV, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                total_images = sum(1 for _ in reader)
+            st.metric("Imágenes minadas", total_images)
+        elif METADATA_FILE.exists():
             with open(METADATA_FILE, 'r', encoding='utf-8') as f:
                 metadata = json.load(f)
             st.metric("Imágenes minadas", len(metadata.get('images', [])))
@@ -104,35 +168,15 @@ def show_annotation_interface():
     st.header("📝 Anotación de Imágenes")
     st.markdown("Mejora el modelo agregando etiquetas descriptivas y verificando la calidad de las imágenes.")
     
-    # Cargar datos
-    if not METADATA_FILE.exists():
+    # Cargar datos desde CSV (preferido) o JSON (fallback)
+    if METADATA_CSV.exists():
+        images = load_metadata_from_csv()
+    elif METADATA_FILE.exists():
+        images = load_metadata_from_json()
+    else:
         st.error("❌ No hay imágenes descargadas. Ejecuta primero `mining_pipeline.py`")
         st.code("python mining_pipeline.py --mode all --images 20", language="bash")
         return
-    
-    with open(METADATA_FILE, 'r', encoding='utf-8') as f:
-        metadata = json.load(f)
-    
-    # Extraer imágenes - el metadata puede tener estructura simple o compleja
-    images = []
-    
-    # Estructura simple: metadata['images'] es una lista directa
-    if 'images' in metadata and isinstance(metadata['images'], list):
-        images = metadata['images']
-    
-    # Estructura compleja: cities -> state -> city -> images
-    elif 'cities' in metadata:
-        for state_data in metadata['cities'].values():
-            if isinstance(state_data, dict):
-                for city_data in state_data.values():
-                    if isinstance(city_data, dict) and 'images' in city_data:
-                        images.extend(city_data['images'])
-    
-    # Normalizar filenames
-    for img in images:
-        if isinstance(img, dict):
-            if 'filename' not in img and 'local_path' in img:
-                img['filename'] = Path(img['local_path']).name
     
     if not images:
         st.warning("⚠️ No hay imágenes para anotar")
@@ -566,7 +610,13 @@ def show_statistics_interface():
     # Cargar datos
     stats = {}
     
-    if METADATA_FILE.exists():
+    if METADATA_CSV.exists():
+        with open(METADATA_CSV, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            images = list(reader)
+            stats['total_images'] = len(images)
+            stats['total_cities'] = len(set(img['city'] for img in images if img.get('city')))
+    elif METADATA_FILE.exists():
         with open(METADATA_FILE, 'r', encoding='utf-8') as f:
             metadata = json.load(f)
         stats['total_images'] = len(metadata.get('images', []))

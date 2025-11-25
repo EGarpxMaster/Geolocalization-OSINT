@@ -32,6 +32,7 @@ DATA_DIR = BASE_DIR / "data"
 MINING_DIR = DATA_DIR / "mining"
 IMAGES_DIR = MINING_DIR / "images"
 METADATA_FILE = MINING_DIR / "metadata.json"
+METADATA_CSV = MINING_DIR / "metadata.csv"
 CITIES_CSV = DATA_DIR / "cities_mx.csv"
 
 # Crear directorios
@@ -55,12 +56,53 @@ def load_metadata():
     return {"images": [], "cities": {}}
 
 def save_metadata(metadata):
-    """Guarda metadata con manejo de errores"""
+    """Guarda metadata en JSON y CSV"""
     try:
+        # Guardar JSON (original)
         with open(METADATA_FILE, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
+        
+        # Guardar CSV (nuevo - más fácil de usar)
+        save_metadata_csv(metadata)
     except Exception as e:
         print(f"⚠️  Error guardando metadata: {e}")
+
+def save_metadata_csv(metadata):
+    """Guarda metadata en formato CSV"""
+    try:
+        with open(METADATA_CSV, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            
+            # Encabezado
+            writer.writerow([
+                'filename', 'source', 'photo_id', 'city', 'state', 
+                'lat', 'lon', 'url', 'title', 'photographer',
+                'downloaded_at', 'size', 'hash'
+            ])
+            
+            # Escribir cada imagen
+            for img in metadata.get('images', []):
+                filename = Path(img.get('local_path', '')).name if img.get('local_path') else ''
+                
+                writer.writerow([
+                    filename,
+                    img.get('source', ''),
+                    img.get('photo_id', ''),
+                    img.get('city_target', ''),
+                    img.get('state_target', ''),
+                    img.get('lat', 0.0),
+                    img.get('lon', 0.0),
+                    img.get('url', ''),
+                    img.get('title', ''),
+                    img.get('photographer', ''),
+                    img.get('downloaded_at', ''),
+                    img.get('size', 0),
+                    img.get('hash', '')
+                ])
+        
+        print(f"✅ Metadata CSV guardado: {METADATA_CSV}")
+    except Exception as e:
+        print(f"⚠️  Error guardando CSV: {e}")
 
 def get_image_hash(image_data):
     """Genera hash único para deduplicación"""
