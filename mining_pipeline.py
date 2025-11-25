@@ -82,14 +82,17 @@ def save_metadata_csv(metadata):
             
             # Escribir cada imagen
             for img in metadata.get('images', []):
-                filename = Path(img.get('local_path', '')).name if img.get('local_path') else ''
+                # Obtener filename del campo correcto
+                filename = img.get('filename', '')
+                if not filename and 'local_path' in img:
+                    filename = Path(img['local_path']).name
                 
                 writer.writerow([
                     filename,
                     img.get('source', ''),
                     img.get('photo_id', ''),
-                    img.get('city_target', ''),
-                    img.get('state_target', ''),
+                    img.get('city', ''),  # Cambiado de city_target a city
+                    img.get('state', ''),  # Cambiado de state_target a state
                     img.get('lat', 0.0),
                     img.get('lon', 0.0),
                     img.get('url', ''),

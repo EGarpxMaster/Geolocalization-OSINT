@@ -162,6 +162,28 @@ def main_interface():
     else:
         show_evaluation_interface()
 
+def create_balanced_list(images, annotated_files, deleted_files):
+    """Crea lista balanceada: 1 imagen por estado, rotando"""
+    from collections import defaultdict
+    
+    pending = [img for img in images if img.get('filename', '') not in annotated_files and img.get('filename', '') not in deleted_files]
+    
+    images_by_state = defaultdict(list)
+    for img in pending:
+        state = img.get('state', 'Unknown')
+        images_by_state[state].append(img)
+    
+    # Crear lista balanceada: 1 de cada estado, luego repetir
+    balanced = []
+    max_per_state = max(len(imgs) for imgs in images_by_state.values()) if images_by_state else 0
+    
+    for round_num in range(max_per_state):
+        for state in sorted(images_by_state.keys()):
+            if round_num < len(images_by_state[state]):
+                balanced.append(images_by_state[state][round_num])
+    
+    return balanced
+
 def show_annotation_interface():
     """Interfaz de anotación mejorada con etiquetas personalizadas"""
     
@@ -182,21 +204,36 @@ def show_annotation_interface():
         st.warning("⚠️ No hay imágenes para anotar")
         return
     
-    # Cargar anotaciones existentes
+    # Cargar anotaciones desde CSV (principal) y JSON (secundario para compatibilidad)
+    annotated_files = set()
+    deleted_files = set()
+    
+    # Leer desde CSV primero (fuente de verdad)
+    if ANNOTATIONS_CSV.exists():
+        import csv
+        with open(ANNOTATIONS_CSV, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                annotated_files.add(row['filename'])
+    
+    # Leer imágenes eliminadas desde archivo de texto
+    deleted_file = MINING_DIR / 'deleted_images.txt'
+    if deleted_file.exists():
+        with open(deleted_file, 'r', encoding='utf-8') as f:
+            deleted_files = {line.strip() for line in f if line.strip()}
+    
+    # Cargar JSON para mantener estructura completa (se guarda en paralelo)
     if ANNOTATIONS_FILE.exists():
         with open(ANNOTATIONS_FILE, 'r', encoding='utf-8') as f:
             annotations = json.load(f)
+        # Sincronizar deleted_images con el archivo de texto
+        if deleted_files:
+            annotations['deleted_images'] = list(deleted_files)
     else:
-        annotations = {'images': [], 'deleted_images': []}
+        annotations = {'images': [], 'deleted_images': list(deleted_files)}
     
-    # Normalizar filenames en anotaciones
-    for ann in annotations['images']:
-        if 'filename' not in ann and 'local_path' in ann:
-            ann['filename'] = Path(ann['local_path']).name
-    
-    annotated_files = {ann.get('filename', '') for ann in annotations['images']}
-    deleted_files = set(annotations.get('deleted_images', []))
-    pending_images = [img for img in images if img.get('filename', '') not in annotated_files and img.get('filename', '') not in deleted_files]
+    # Crear lista balanceada por estado
+    pending_images = create_balanced_list(images, annotated_files, deleted_files)
     
     # Estadísticas en cards
     col1, col2, col3, col4 = st.columns(4)
@@ -204,6 +241,10 @@ def show_annotation_interface():
     col2.metric("✅ Anotadas", len(annotated_files))
     col3.metric("🗑️ Eliminadas", len(deleted_files))
     col4.metric("⏳ Pendientes", len(pending_images))
+    
+    # Mostrar estados únicos pendientes
+    unique_states = len(set(img.get('state', 'Unknown') for img in pending_images))
+    st.caption(f"🗺️ Estados diferentes: {unique_states}")
     
     if not pending_images:
         st.success("✅ ¡Todas las imágenes están procesadas!")
@@ -244,6 +285,17 @@ def show_annotation_interface():
     
     st.divider()
     
+    # Verificar si la imagen actual ya está anotada
+    current_filename = current_img.get('filename', '')
+    already_annotated = any(
+        ann.get('filename') == current_filename 
+        for ann in annotations.get('images', [])
+    )
+    
+    # Mostrar estado de anotación
+    if already_annotated:
+        st.info("✅ Esta imagen ya fue anotada anteriormente")
+    
     # Layout principal
     col_left, col_right = st.columns([3, 2])
     
@@ -251,8 +303,43 @@ def show_annotation_interface():
         st.subheader(f"🖼️ Imagen {st.session_state.current_idx + 1} de {len(pending_images)}")
         
         if img_path.exists():
-            image = Image.open(img_path)
-            st.image(image, use_container_width=True)
+            try:
+                image = Image.open(img_path)
+                st.image(image, width='stretch')
+            except Exception as e:
+                st.error(f"❌ Imagen corrupta o inválida: {current_img.get('filename', 'sin nombre')}")
+                st.caption(f"Error: {str(e)}")
+                
+                col_auto1, col_auto2 = st.columns(2)
+                with col_auto1:
+                    if st.button("🗑️ Eliminar automáticamente", type="primary", width='stretch'):
+                        current_filename = current_img.get('filename', '')
+                        
+                        # Marcar como eliminada
+                        annotations.setdefault('deleted_images', []).append(current_filename)
+                        save_annotations(annotations)
+                        
+                        deleted_file = MINING_DIR / 'deleted_images.txt'
+                        with open(deleted_file, 'a', encoding='utf-8') as f:
+                            f.write(f"{current_filename}\n")
+                        
+                        # Eliminar archivo físico corrupto
+                        try:
+                            img_path.unlink()
+                            print(f"✅ Imagen corrupta eliminada: {current_filename}")
+                        except Exception as del_err:
+                            print(f"⚠️ No se pudo eliminar archivo: {del_err}")
+                        
+                        # No avanzar índice - el rerun reconstruirá la lista balanceada
+                        # Si había otra imagen del mismo estado, aparecerá en la misma posición
+                        st.rerun()
+                
+                with col_auto2:
+                    if st.button("⏭️ Omitir por ahora", width='stretch'):
+                        if st.session_state.current_idx < len(pending_images) - 1:
+                            st.session_state.current_idx += 1
+                            st.rerun()
+                return
             
             # Metadata de la imagen
             with st.expander("📋 Metadata de la imagen", expanded=True):
@@ -276,7 +363,7 @@ def show_annotation_interface():
             if st.button("Marcar como perdida y continuar"):
                 annotations.setdefault('deleted_images', []).append(current_img.get('filename', ''))
                 save_annotations(annotations)
-                st.session_state.current_idx += 1
+                # No avanzar índice - reconstruir lista
                 st.rerun()
             return
     
@@ -288,20 +375,24 @@ def show_annotation_interface():
         state_name = current_img.get('state_target', current_img.get('state', ''))
         st.info(f"**Ciudad esperada:** {city_name}, {state_name}")
         
+        # Crear clave única basada en el índice actual para forzar reinicio del formulario
+        form_key = f"form_{st.session_state.current_idx}"
+        
         # Verificación
         correct_city = st.radio(
             "¿La imagen corresponde a esta ciudad?",
             options=["✅ Sí", "❌ No", "🤔 No estoy seguro"],
             horizontal=True,
-            key="city_verification"
+            key=f"city_verification_{form_key}"
         )
         
         # Calidad
         quality = st.select_slider(
-            "Calidad de la imagen",
+            "Relevancia de la imagen",
             options=[1, 2, 3, 4, 5],
             value=3,
-            format_func=lambda x: ["⭐ Muy baja", "⭐⭐ Baja", "⭐⭐⭐ Media", "⭐⭐⭐⭐ Buena", "⭐⭐⭐⭐⭐ Excelente"][x-1]
+            format_func=lambda x: ["⭐ Muy baja", "⭐⭐ Baja", "⭐⭐⭐ Media", "⭐⭐⭐⭐ Buena", "⭐⭐⭐⭐⭐ Excelente"][x-1],
+            key=f"quality_{form_key}"
         )
         
         # Etiquetas personalizadas
@@ -310,7 +401,8 @@ def show_annotation_interface():
         custom_tags = st.text_input(
             "Etiquetas",
             placeholder="arquitectura colonial, plaza central, catedral, zócalo...",
-            help="Estas etiquetas mejorarán la precisión del modelo"
+            help="Estas etiquetas mejorarán la precisión del modelo",
+            key=f"custom_tags_{form_key}"
         )
         
         # Elementos detectados
@@ -318,19 +410,19 @@ def show_annotation_interface():
         col_e1, col_e2, col_e3 = st.columns(3)
         
         with col_e1:
-            has_landmarks = st.checkbox("🏛️ Monumentos")
-            has_architecture = st.checkbox("🏘️ Arquitectura")
-            has_signs = st.checkbox("🪧 Señales")
+            has_landmarks = st.checkbox("🏛️ Monumentos", key=f"landmarks_{form_key}")
+            has_architecture = st.checkbox("🏘️ Arquitectura", key=f"architecture_{form_key}")
+            has_signs = st.checkbox("🪧 Señales", key=f"signs_{form_key}")
         
         with col_e2:
-            has_nature = st.checkbox("🌳 Naturaleza")
-            has_urban = st.checkbox("🏙️ Urbano")
-            has_beach = st.checkbox("🏖️ Playa")
+            has_nature = st.checkbox("🌳 Naturaleza", key=f"nature_{form_key}")
+            has_urban = st.checkbox("🏙️ Urbano", key=f"urban_{form_key}")
+            has_beach = st.checkbox("🏖️ Playa", key=f"beach_{form_key}")
         
         with col_e3:
-            has_people = st.checkbox("👥 Personas")
-            has_vehicles = st.checkbox("🚗 Vehículos")
-            has_text = st.checkbox("📝 Texto")
+            has_people = st.checkbox("👥 Personas", key=f"people_{form_key}")
+            has_vehicles = st.checkbox("🚗 Vehículos", key=f"vehicles_{form_key}")
+            has_text = st.checkbox("📝 Texto", key=f"text_{form_key}")
         
         # Confianza
         confidence = st.slider(
@@ -338,14 +430,17 @@ def show_annotation_interface():
             min_value=0,
             max_value=100,
             value=80,
-            help="0% = No estoy seguro, 100% = Muy seguro"
+            step=5,
+            help="0% = No estoy seguro, 100% = Muy seguro",
+            key=f"confidence_{form_key}"
         )
         
         # Notas
         notes = st.text_area(
             "📝 Notas adicionales (opcional)",
             placeholder="Describe lo que ves: monumentos específicos, características únicas, clima, época del año...",
-            height=100
+            height=100,
+            key=f"notes_{form_key}"
         )
         
         # Anotador fijo
@@ -357,78 +452,116 @@ def show_annotation_interface():
         col_b1, col_b2, col_b3, col_b4 = st.columns(4)
         
         with col_b1:
-            if st.button("⬅️ Anterior", use_container_width=True, disabled=(st.session_state.current_idx == 0)):
+            if st.button("⬅️ Anterior", width='stretch', disabled=(st.session_state.current_idx == 0)):
                 st.session_state.current_idx -= 1
                 st.rerun()
         
         with col_b2:
-            if st.button("💾 Guardar", type="primary", use_container_width=True):
-                # Guardar anotación (usar city_target/state_target si existen)
-                annotation = {
-                    'filename': current_img.get('filename', ''),
-                    'city': current_img.get('city_target', current_img.get('city', '')),
-                    'state': current_img.get('state_target', current_img.get('state', '')),
-                    'lat': current_img.get('lat', 0),
-                    'lon': current_img.get('lon', 0),
-                    'source': current_img.get('source', ''),
-                    'correct_city': correct_city.split()[0],  # ✅, ❌, o 🤔
-                    'quality': quality,
-                    'custom_tags': [tag.strip() for tag in custom_tags.split(',') if tag.strip()],
-                    'elements': {
-                        'landmarks': has_landmarks,
-                        'architecture': has_architecture,
-                        'signs': has_signs,
-                        'nature': has_nature,
-                        'urban': has_urban,
-                        'beach': has_beach,
-                        'people': has_people,
-                        'vehicles': has_vehicles,
-                        'text': has_text
-                    },
-                    'confidence': confidence,
-                    'notes': notes,
-                    'annotated_at': datetime.now().isoformat(),
-                    'annotated_by': annotator
-                }
+            if st.button("💾 Guardar", type="primary", width='stretch'):
+                # Verificar si esta imagen ya fue anotada
+                current_filename = current_img.get('filename', '')
+                already_annotated = any(
+                    ann.get('filename') == current_filename 
+                    for ann in annotations.get('images', [])
+                )
                 
-                annotations['images'].append(annotation)
-                save_annotations(annotations)
-                
-                # Guardar también en CSV
-                save_annotation_to_csv(annotation)
-                
-                st.success("✅ Anotación guardada (JSON + CSV)")
-                
-                # Siguiente imagen
-                if st.session_state.current_idx < len(pending_images) - 1:
-                    st.session_state.current_idx += 1
-                    st.rerun()
+                if already_annotated:
+                    st.warning(f"⚠️ Esta imagen ya fue anotada anteriormente. Usa '⏭️ Omitir' para pasar a la siguiente.")
                 else:
-                    st.balloons()
-                    st.success("🎉 ¡Todas las imágenes anotadas!")
+                    # Guardar anotación (usar city_target/state_target si existen)
+                    annotation = {
+                        'filename': current_filename,
+                        'city': current_img.get('city_target', current_img.get('city', '')),
+                        'state': current_img.get('state_target', current_img.get('state', '')),
+                        'lat': current_img.get('lat', 0),
+                        'lon': current_img.get('lon', 0),
+                        'source': current_img.get('source', ''),
+                        'correct_city': correct_city.split()[0],  # ✅, ❌, o 🤔
+                        'quality': quality,
+                        'custom_tags': [tag.strip() for tag in custom_tags.split(',') if tag.strip()],
+                        'elements': {
+                            'landmarks': has_landmarks,
+                            'architecture': has_architecture,
+                            'signs': has_signs,
+                            'nature': has_nature,
+                            'urban': has_urban,
+                            'beach': has_beach,
+                            'people': has_people,
+                            'vehicles': has_vehicles,
+                            'text': has_text
+                        },
+                        'confidence': confidence,
+                        'notes': notes,
+                        'annotated_at': datetime.now().isoformat(),
+                        'annotated_by': annotator
+                    }
+                    
+                    # Guardar primero en CSV (fuente principal)
+                    save_annotation_to_csv(annotation)
+                    
+                    # Guardar también en JSON (respaldo/compatibilidad)
+                    annotations['images'].append(annotation)
+                    save_annotations(annotations)
+                    
+                    st.success("✅ Anotación guardada (CSV ✓ + JSON ✓)")
+                    
+                    # Siguiente imagen
+                    if st.session_state.current_idx < len(pending_images) - 1:
+                        st.session_state.current_idx += 1
+                        st.rerun()
+                    else:
+                        st.balloons()
+                        st.success("🎉 ¡Todas las imágenes anotadas!")
         
         with col_b3:
-            if st.button("⏭️ Omitir", use_container_width=True):
+            if st.button("⏭️ Omitir", width='stretch'):
                 if st.session_state.current_idx < len(pending_images) - 1:
                     st.session_state.current_idx += 1
                     st.rerun()
         
         with col_b4:
-            if st.button("🗑️ Eliminar", use_container_width=True, help="Eliminar imagen de baja calidad"):
-                if st.checkbox("Confirmar eliminación", key="confirm_delete"):
-                    # Agregar a lista de eliminadas
-                    annotations.setdefault('deleted_images', []).append(current_img.get('filename', ''))
-                    save_annotations(annotations)
-                    
-                    # Eliminar archivo físico
-                    try:
-                        img_path.unlink()
-                        st.success(f"🗑️ Imagen eliminada: {current_img.get('filename', 'imagen')}")
-                    except Exception as e:
-                        st.warning(f"⚠️ No se pudo eliminar el archivo físico: {e}")
-                    
-                    st.session_state.current_idx = min(st.session_state.current_idx, len(pending_images) - 2)
+            # Inicializar estado de confirmación de eliminación
+            if 'confirm_delete' not in st.session_state:
+                st.session_state.confirm_delete = False
+            
+            if not st.session_state.confirm_delete:
+                if st.button("🗑️ Eliminar", width='stretch', help="Eliminar imagen de baja calidad"):
+                    st.session_state.confirm_delete = True
                     st.rerun()
+            else:
+                st.warning("⚠️ ¿Estás seguro de eliminar esta imagen?")
+                col_yes, col_no = st.columns(2)
+                with col_yes:
+                    if st.button("✅ Sí, eliminar", width='stretch', type="primary"):
+                        current_filename = current_img.get('filename', '')
+                        
+                        # Agregar a lista de eliminadas en JSON
+                        annotations.setdefault('deleted_images', []).append(current_filename)
+                        save_annotations(annotations)
+                        
+                        # Guardar en archivo de texto para lectura rápida
+                        deleted_file = MINING_DIR / 'deleted_images.txt'
+                        with open(deleted_file, 'a', encoding='utf-8') as f:
+                            f.write(f"{current_filename}\n")
+                        
+                        # Eliminar archivo físico
+                        try:
+                            img_path.unlink()
+                            print(f"✅ Imagen eliminada del disco: {current_filename}")
+                        except Exception as e:
+                            print(f"⚠️ No se pudo eliminar el archivo físico: {e}")
+                        
+                        # Resetear estado de confirmación
+                        st.session_state.confirm_delete = False
+                        
+                        # No avanzar índice - el rerun reconstruirá la lista balanceada
+                        # Si había otra imagen del mismo estado, aparecerá en la misma posición
+                        # Si no, continuará con el siguiente estado
+                        st.rerun()
+                with col_no:
+                    if st.button("❌ Cancelar", width='stretch'):
+                        st.session_state.confirm_delete = False
+                        st.rerun()
     
     # Barra de progreso
     progress = (st.session_state.current_idx + 1) / len(pending_images)
@@ -441,13 +574,18 @@ def save_annotations(annotations):
         # Crear backup
         if ANNOTATIONS_FILE.exists():
             backup_file = ANNOTATIONS_FILE.with_suffix('.backup.json')
-            ANNOTATIONS_FILE.rename(backup_file)
+            import shutil
+            shutil.copy2(ANNOTATIONS_FILE, backup_file)
         
         # Guardar nuevo
         with open(ANNOTATIONS_FILE, 'w', encoding='utf-8') as f:
             json.dump(annotations, f, indent=2, ensure_ascii=False)
+        
+        print(f"✅ Anotaciones JSON guardadas: {len(annotations.get('images', []))} anotaciones")
     except Exception as e:
-        st.error(f"Error guardando anotaciones: {e}")
+        st.error(f"❌ Error guardando anotaciones JSON: {e}")
+        import traceback
+        traceback.print_exc()
 
 def save_annotation_to_csv(annotation):
     """Guarda una anotación en formato CSV para fine-tuning"""
@@ -456,46 +594,55 @@ def save_annotation_to_csv(annotation):
     # Crear CSV si no existe
     file_exists = ANNOTATIONS_CSV.exists()
     
-    with open(ANNOTATIONS_CSV, 'a', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        
-        # Escribir encabezado si es nuevo archivo
-        if not file_exists:
+    try:
+        with open(ANNOTATIONS_CSV, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f, quoting=csv.QUOTE_NONNUMERIC)
+            
+            # Escribir encabezado si es nuevo archivo
+            if not file_exists:
+                writer.writerow([
+                    'filename', 'city', 'state', 'lat', 'lon',
+                    'correct_city', 'quality', 'confidence',
+                    'landmarks', 'architecture', 'signs', 'nature', 'urban', 'beach',
+                    'people', 'vehicles', 'text', 'custom_tags', 'notes',
+                    'annotated_at', 'annotated_by'
+                ])
+            
+            # Escribir datos
+            elements = annotation.get('elements', {})
+            # Limpiar tags y notas de saltos de línea
+            tags_str = ','.join(annotation.get('custom_tags', [])).replace('\n', ' ').replace('\r', ' ')
+            notes_str = annotation.get('notes', '').replace('\n', ' ').replace('\r', ' ')
+            
             writer.writerow([
-                'filename', 'city', 'state', 'lat', 'lon',
-                'correct_city', 'quality', 'confidence',
-                'landmarks', 'architecture', 'signs', 'nature', 'urban', 'beach',
-                'people', 'vehicles', 'text', 'custom_tags', 'notes',
-                'annotated_at', 'annotated_by'
+                annotation.get('filename', ''),
+                annotation.get('city', ''),
+                annotation.get('state', ''),
+                annotation.get('lat', 0.0),
+                annotation.get('lon', 0.0),
+                annotation.get('correct_city', ''),
+                annotation.get('quality', 0),
+                annotation.get('confidence', 0),
+                elements.get('landmarks', False),
+                elements.get('architecture', False),
+                elements.get('signs', False),
+                elements.get('nature', False),
+                elements.get('urban', False),
+                elements.get('beach', False),
+                elements.get('people', False),
+                elements.get('vehicles', False),
+                elements.get('text', False),
+                tags_str,
+                notes_str,
+                annotation.get('annotated_at', ''),
+                annotation.get('annotated_by', 'Emma')
             ])
-        
-        # Escribir datos
-        elements = annotation.get('elements', {})
-        tags_str = ','.join(annotation.get('custom_tags', []))
-        
-        writer.writerow([
-            annotation.get('filename', ''),
-            annotation.get('city', ''),
-            annotation.get('state', ''),
-            annotation.get('lat', 0.0),
-            annotation.get('lon', 0.0),
-            annotation.get('correct_city', ''),
-            annotation.get('quality', 0),
-            annotation.get('confidence', 0),
-            elements.get('landmarks', False),
-            elements.get('architecture', False),
-            elements.get('signs', False),
-            elements.get('nature', False),
-            elements.get('urban', False),
-            elements.get('beach', False),
-            elements.get('people', False),
-            elements.get('vehicles', False),
-            elements.get('text', False),
-            tags_str,
-            annotation.get('notes', ''),
-            annotation.get('annotated_at', ''),
-            annotation.get('annotated_by', 'Emma')
-        ])
+            
+            print(f"✅ Anotación CSV guardada: {annotation.get('filename', '')}")
+    except Exception as e:
+        print(f"❌ Error guardando CSV: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def show_training_interface():
@@ -531,8 +678,8 @@ def show_training_interface():
         learning_rate = st.select_slider("Learning Rate", options=[1e-6, 5e-6, 1e-5, 5e-5], value=1e-5, format_func=lambda x: f"{x:.0e}")
     
     with col2:
-        min_quality = st.slider("Calidad mínima", 1, 5, 2)
-        min_confidence = st.slider("Confianza mínima (%)", 0, 100, 50)
+        min_quality = st.slider("Relevancia mínima", 1, 5, 2)
+        min_confidence = st.slider("Confianza mínima (%)", 5, 100, 50)
     
     st.divider()
     
@@ -547,7 +694,7 @@ def show_training_interface():
     st.info(f"⏱️ **Tiempo estimado:** {estimated_time_min}-{estimated_time_min*2} minutos")
     
     # Botón de entrenamiento
-    if st.button("🚀 Iniciar Fine-tuning", type="primary", use_container_width=True):
+    if st.button("🚀 Iniciar Fine-tuning", type="primary", width='stretch'):
         with st.spinner("Entrenando modelo... Esto puede tardar varios minutos."):
             try:
                 result = finetune_model(
@@ -591,7 +738,7 @@ def show_build_model_interface():
     **Tiempo estimado:** 3-5 minutos
     """)
     
-    if st.button("🏗️ Regenerar Embeddings", type="primary", use_container_width=True):
+    if st.button("🏗️ Regenerar Embeddings", type="primary", width='stretch'):
         with st.spinner("Regenerando embeddings de ciudades..."):
             try:
                 build_model()
@@ -660,10 +807,10 @@ def show_statistics_interface():
         quality_dist[q] = quality_dist.get(q, 0) + 1
     
     quality_df = pd.DataFrame([
-        {'Calidad': f"{'⭐' * k} ({k})", 'Cantidad': v}
+        {'Relevancia': f"{'⭐' * k} ({k})", 'Cantidad': v}
         for k, v in sorted(quality_dist.items())
     ])
-    st.bar_chart(quality_df.set_index('Calidad'))
+    st.bar_chart(quality_df.set_index('Relevancia'))
     
     # Distribución por ciudad
     st.subheader("🗺️ Top 10 Ciudades Anotadas")
@@ -674,7 +821,7 @@ def show_statistics_interface():
     
     top_cities = sorted(city_dist.items(), key=lambda x: x[1], reverse=True)[:10]
     city_df = pd.DataFrame(top_cities, columns=['Ciudad', 'Anotaciones'])
-    st.dataframe(city_df, use_container_width=True, hide_index=True)
+    st.dataframe(city_df, width='stretch', hide_index=True)
     
     # Elementos detectados
     st.subheader("👁️ Elementos Más Comunes")
@@ -702,7 +849,7 @@ def show_statistics_interface():
     if tags_count:
         top_tags = sorted(tags_count.items(), key=lambda x: x[1], reverse=True)[:15]
         tags_df = pd.DataFrame(top_tags, columns=['Etiqueta', 'Uso'])
-        st.dataframe(tags_df, use_container_width=True, hide_index=True)
+        st.dataframe(tags_df, width='stretch', hide_index=True)
     else:
         st.info("No se han agregado etiquetas personalizadas aún")
 
@@ -1085,7 +1232,7 @@ def show_evaluation_interface():
     with col2:
         quality_filter = st.slider("Calidad mínima", 1, 5, 3)
     
-    if st.button("🚀 Iniciar Evaluación", type="primary", use_container_width=True):
+    if st.button("🚀 Iniciar Evaluación", type="primary", width='stretch'):
         with st.spinner("Evaluando modelo..."):
             results = evaluate_model(annotations_data, num_samples, quality_filter)
             
@@ -1111,7 +1258,7 @@ def show_evaluation_interface():
                 
                 st.dataframe(
                     df_results[['filename', 'true_city', 'predicted_city', 'confidence', 'distance_km', 'correct']],
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True
                 )
                 
@@ -1137,7 +1284,7 @@ def show_evaluation_interface():
                     })
                 
                 df_city = pd.DataFrame(city_stats).sort_values('Precisión %', ascending=False)
-                st.dataframe(df_city, use_container_width=True, hide_index=True)
+                st.dataframe(df_city, width='stretch', hide_index=True)
                 
                 # Gráfico de distribución de distancias
                 st.subheader("📏 Distribución de Errores de Distancia")
