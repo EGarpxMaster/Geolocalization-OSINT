@@ -46,6 +46,10 @@ model/*.pth
 # Logs
 *.log
 
+# Environment variables (¡NO SUBIR CREDENCIALES!)
+.env
+.streamlit/secrets.toml
+
 # OS
 .DS_Store
 Thumbs.db
