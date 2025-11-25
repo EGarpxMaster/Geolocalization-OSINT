@@ -40,6 +40,7 @@ MINING_DIR = DATA_DIR / "mining"
 IMAGES_DIR = MINING_DIR / "images"
 METADATA_FILE = MINING_DIR / "metadata.json"
 ANNOTATIONS_FILE = MINING_DIR / "annotations.json"
+ANNOTATIONS_CSV = MINING_DIR / "annotations.csv"
 CITIES_CSV = DATA_DIR / "cities_mx.csv"
 MODEL_DIR = BASE_DIR / "model"
 CHECKPOINT_DIR = MODEL_DIR / "checkpoints"
@@ -68,7 +69,7 @@ def main_interface():
         st.header("⚙️ Modo de Operación")
         mode = st.radio(
             "Selecciona el modo:",
-            ["📝 Anotación", "🔬 Fine-tuning", "🏗️ Regenerar Modelo", "📊 Estadísticas"],
+            ["📝 Anotación", "🔬 Fine-tuning", "🏗️ Regenerar Modelo", "📊 Estadísticas", "🎯 Evaluación"],
             index=0
         )
         
@@ -92,8 +93,10 @@ def main_interface():
         show_training_interface()
     elif mode == "🏗️ Regenerar Modelo":
         show_build_model_interface()
-    else:
+    elif mode == "📊 Estadísticas":
         show_statistics_interface()
+    else:
+        show_evaluation_interface()
 
 def show_annotation_interface():
     """Interfaz de anotación mejorada con etiquetas personalizadas"""
@@ -301,6 +304,9 @@ def show_annotation_interface():
             height=100
         )
         
+        # Anotador fijo
+        annotator = "Emma"
+        
         st.divider()
         
         # Botones de acción
@@ -338,13 +344,16 @@ def show_annotation_interface():
                     'confidence': confidence,
                     'notes': notes,
                     'annotated_at': datetime.now().isoformat(),
-                    'annotated_by': 'user'
+                    'annotated_by': annotator
                 }
                 
                 annotations['images'].append(annotation)
                 save_annotations(annotations)
                 
-                st.success("✅ Anotación guardada")
+                # Guardar también en CSV
+                save_annotation_to_csv(annotation)
+                
+                st.success("✅ Anotación guardada (JSON + CSV)")
                 
                 # Siguiente imagen
                 if st.session_state.current_idx < len(pending_images) - 1:
@@ -395,6 +404,55 @@ def save_annotations(annotations):
             json.dump(annotations, f, indent=2, ensure_ascii=False)
     except Exception as e:
         st.error(f"Error guardando anotaciones: {e}")
+
+def save_annotation_to_csv(annotation):
+    """Guarda una anotación en formato CSV para fine-tuning"""
+    import csv
+    
+    # Crear CSV si no existe
+    file_exists = ANNOTATIONS_CSV.exists()
+    
+    with open(ANNOTATIONS_CSV, 'a', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        
+        # Escribir encabezado si es nuevo archivo
+        if not file_exists:
+            writer.writerow([
+                'filename', 'city', 'state', 'lat', 'lon',
+                'correct_city', 'quality', 'confidence',
+                'landmarks', 'architecture', 'signs', 'nature', 'urban', 'beach',
+                'people', 'vehicles', 'text', 'custom_tags', 'notes',
+                'annotated_at', 'annotated_by'
+            ])
+        
+        # Escribir datos
+        elements = annotation.get('elements', {})
+        tags_str = ','.join(annotation.get('custom_tags', []))
+        
+        writer.writerow([
+            annotation.get('filename', ''),
+            annotation.get('city', ''),
+            annotation.get('state', ''),
+            annotation.get('lat', 0.0),
+            annotation.get('lon', 0.0),
+            annotation.get('correct_city', ''),
+            annotation.get('quality', 0),
+            annotation.get('confidence', 0),
+            elements.get('landmarks', False),
+            elements.get('architecture', False),
+            elements.get('signs', False),
+            elements.get('nature', False),
+            elements.get('urban', False),
+            elements.get('beach', False),
+            elements.get('people', False),
+            elements.get('vehicles', False),
+            elements.get('text', False),
+            tags_str,
+            annotation.get('notes', ''),
+            annotation.get('annotated_at', ''),
+            annotation.get('annotated_by', 'Emma')
+        ])
+
 
 def show_training_interface():
     """Interfaz para ejecutar el fine-tuning"""
@@ -931,6 +989,248 @@ def build_model():
     
     st.success(f"📁 Modelo guardado en: {output_path}")
     st.info(f"🎯 {len(cities)} ciudades procesadas")
+
+# ============================================================================
+# EVALUACIÓN DE MODELO
+# ============================================================================
+
+def show_evaluation_interface():
+    """Interfaz para evaluar el modelo con imágenes random"""
+    
+    st.header("🎯 Evaluación del Modelo")
+    st.markdown("Evalúa la precisión del modelo con imágenes aleatorias.")
+    
+    # Verificar que exista modelo
+    model_path = MODEL_DIR / "modelo.pth"
+    if not model_path.exists():
+        st.error("❌ No existe modelo entrenado")
+        st.info("Primero debes ejecutar el **🔬 Fine-tuning** y **🏗️ Regenerar Modelo**")
+        return
+    
+    # Verificar anotaciones CSV
+    if not ANNOTATIONS_CSV.exists():
+        st.error("❌ No hay anotaciones en CSV")
+        st.info("Primero anota imágenes en el modo **📝 Anotación**")
+        return
+    
+    # Leer CSV de anotaciones
+    import csv
+    annotations_data = []
+    with open(ANNOTATIONS_CSV, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        annotations_data = list(reader)
+    
+    if len(annotations_data) < 10:
+        st.warning(f"⚠️ Solo hay {len(annotations_data)} anotaciones")
+        st.info("Se recomienda tener al menos 20 imágenes anotadas para una evaluación significativa")
+    
+    st.success(f"✅ {len(annotations_data)} imágenes anotadas disponibles")
+    
+    # Configuración de evaluación
+    st.subheader("⚙️ Configuración")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        num_samples = st.slider("Número de imágenes a evaluar", 10, min(100, len(annotations_data)), min(20, len(annotations_data)))
+    with col2:
+        quality_filter = st.slider("Calidad mínima", 1, 5, 3)
+    
+    if st.button("🚀 Iniciar Evaluación", type="primary", use_container_width=True):
+        with st.spinner("Evaluando modelo..."):
+            results = evaluate_model(annotations_data, num_samples, quality_filter)
+            
+            if results:
+                st.divider()
+                st.subheader("📊 Resultados de Evaluación")
+                
+                # Métricas principales
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("🎯 Precisión Total", f"{results['accuracy']:.1f}%")
+                col2.metric("✅ Top-1 Accuracy", f"{results['top1_accuracy']:.1f}%")
+                col3.metric("🔝 Top-3 Accuracy", f"{results['top3_accuracy']:.1f}%")
+                col4.metric("📏 Dist. Promedio", f"{results['avg_distance']:.1f} km")
+                
+                # Tabla de predicciones
+                st.subheader("🔍 Predicciones Detalladas")
+                
+                df_results = pd.DataFrame(results['predictions'])
+                df_results['correct'] = df_results.apply(
+                    lambda row: '✅' if row['predicted_city'] == row['true_city'] else '❌',
+                    axis=1
+                )
+                
+                st.dataframe(
+                    df_results[['filename', 'true_city', 'predicted_city', 'confidence', 'distance_km', 'correct']],
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Análisis por ciudad
+                st.subheader("🏙️ Precisión por Ciudad")
+                city_accuracy = {}
+                for pred in results['predictions']:
+                    city = pred['true_city']
+                    if city not in city_accuracy:
+                        city_accuracy[city] = {'correct': 0, 'total': 0}
+                    city_accuracy[city]['total'] += 1
+                    if pred['predicted_city'] == pred['true_city']:
+                        city_accuracy[city]['correct'] += 1
+                
+                city_stats = []
+                for city, stats in city_accuracy.items():
+                    accuracy = (stats['correct'] / stats['total']) * 100
+                    city_stats.append({
+                        'Ciudad': city,
+                        'Correctas': stats['correct'],
+                        'Total': stats['total'],
+                        'Precisión %': f"{accuracy:.1f}%"
+                    })
+                
+                df_city = pd.DataFrame(city_stats).sort_values('Precisión %', ascending=False)
+                st.dataframe(df_city, use_container_width=True, hide_index=True)
+                
+                # Gráfico de distribución de distancias
+                st.subheader("📏 Distribución de Errores de Distancia")
+                distances = [p['distance_km'] for p in results['predictions']]
+                
+                import matplotlib.pyplot as plt
+                fig, ax = plt.subplots()
+                ax.hist(distances, bins=20, color='skyblue', edgecolor='black')
+                ax.set_xlabel('Distancia del error (km)')
+                ax.set_ylabel('Frecuencia')
+                ax.set_title('Distribución de errores de distancia')
+                st.pyplot(fig)
+
+def evaluate_model(annotations_data, num_samples, quality_filter):
+    """Evalúa el modelo con imágenes aleatorias"""
+    import random
+    from math import radians, cos, sin, asin, sqrt
+    
+    # Filtrar por calidad
+    filtered_data = [
+        ann for ann in annotations_data 
+        if int(ann.get('quality', 0)) >= quality_filter
+    ]
+    
+    if len(filtered_data) < num_samples:
+        st.error(f"❌ Solo hay {len(filtered_data)} imágenes con calidad >= {quality_filter}")
+        return None
+    
+    # Seleccionar muestras aleatorias
+    samples = random.sample(filtered_data, num_samples)
+    
+    # Cargar modelo
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model_path = MODEL_DIR / "modelo.pth"
+    model_data = torch.load(model_path, map_location=device, weights_only=False)
+    
+    city_embeds = model_data['city_embeds'].to(device)
+    cities = model_data['cities']
+    model_name = model_data['model_name']
+    
+    # Cargar CLIP
+    processor = CLIPProcessor.from_pretrained(model_name)
+    model = CLIPModel.from_pretrained(model_name).to(device)
+    
+    # Cargar modelo fine-tuned si existe
+    finetuned_path = MODEL_DIR / "modelo_finetuned.pth"
+    if finetuned_path.exists():
+        model.load_state_dict(torch.load(finetuned_path, map_location=device, weights_only=False))
+    
+    model.eval()
+    
+    # Función para calcular distancia haversine
+    def haversine(lon1, lat1, lon2, lat2):
+        lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
+        dlon = lon2 - lon1
+        dlat = lat2 - lat1
+        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+        c = 2 * asin(sqrt(a))
+        km = 6371 * c
+        return km
+    
+    # Evaluar cada muestra
+    predictions = []
+    correct_top1 = 0
+    correct_top3 = 0
+    total_distance = 0
+    
+    progress_bar = st.progress(0)
+    
+    with torch.no_grad():
+        for idx, sample in enumerate(samples):
+            # Actualizar progreso
+            progress_bar.progress((idx + 1) / len(samples))
+            
+            # Cargar imagen
+            img_path = IMAGES_DIR / sample['filename']
+            if not img_path.exists():
+                continue
+            
+            image = Image.open(img_path).convert('RGB')
+            
+            # Procesar imagen
+            inputs = processor(images=image, return_tensors="pt").to(device)
+            image_features = model.get_image_features(**inputs)
+            
+            # Calcular similitudes
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            city_embeds_norm = city_embeds / city_embeds.norm(dim=-1, keepdim=True)
+            similarities = torch.matmul(image_features, city_embeds_norm.t()).cpu().numpy()[0]
+            
+            # Top-3 predicciones
+            top3_indices = similarities.argsort()[-3:][::-1]
+            
+            predicted_city = cities[top3_indices[0]]['name']
+            predicted_state = cities[top3_indices[0]]['state']
+            confidence = float(similarities[top3_indices[0]])
+            
+            # Ciudad verdadera
+            true_city = sample['city']
+            true_state = sample['state']
+            true_lat = float(sample['lat'])
+            true_lon = float(sample['lon'])
+            
+            # Calcular distancia del error
+            pred_lat = float(cities[top3_indices[0]]['lat'])
+            pred_lon = float(cities[top3_indices[0]]['lon'])
+            distance = haversine(true_lon, true_lat, pred_lon, pred_lat)
+            
+            # Verificar si es correcto
+            is_correct_top1 = (predicted_city == true_city)
+            is_correct_top3 = any(cities[idx]['name'] == true_city for idx in top3_indices)
+            
+            if is_correct_top1:
+                correct_top1 += 1
+            if is_correct_top3:
+                correct_top3 += 1
+            
+            total_distance += distance
+            
+            predictions.append({
+                'filename': sample['filename'],
+                'true_city': f"{true_city}, {true_state}",
+                'predicted_city': f"{predicted_city}, {predicted_state}",
+                'confidence': f"{confidence:.3f}",
+                'distance_km': round(distance, 2),
+                'correct_top1': is_correct_top1
+            })
+    
+    progress_bar.progress(1.0)
+    
+    # Calcular métricas
+    accuracy = (correct_top1 / len(predictions)) * 100
+    top1_accuracy = (correct_top1 / len(predictions)) * 100
+    top3_accuracy = (correct_top3 / len(predictions)) * 100
+    avg_distance = total_distance / len(predictions)
+    
+    return {
+        'accuracy': accuracy,
+        'top1_accuracy': top1_accuracy,
+        'top3_accuracy': top3_accuracy,
+        'avg_distance': avg_distance,
+        'predictions': predictions
+    }
 
 # ============================================================================
 # MAIN
