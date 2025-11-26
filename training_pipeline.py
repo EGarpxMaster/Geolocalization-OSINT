@@ -13,6 +13,8 @@ import csv
 from pathlib import Path
 from datetime import datetime
 import sys
+import requests
+from io import BytesIO
 
 # Verificar dependencias
 try:
@@ -25,10 +27,24 @@ try:
     from torch.utils.data import Dataset, DataLoader
     from transformers import CLIPProcessor, CLIPModel
     from tqdm import tqdm
+    from dotenv import load_dotenv
+    from supabase import create_client, Client
 except ImportError as e:
     print(f"❌ Error: Falta instalar dependencias: {e}")
-    print("💡 Ejecuta: pip install streamlit pillow pandas torch transformers tqdm")
+    print("💡 Ejecuta: pip install streamlit pillow pandas torch transformers tqdm python-dotenv supabase")
     sys.exit(1)
+
+# Cargar variables de entorno y conectar a Supabase
+load_dotenv()
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+if SUPABASE_URL and SUPABASE_KEY:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    USE_SUPABASE = True
+else:
+    USE_SUPABASE = False
+    st.warning("⚠️ Supabase no configurado. Usando archivos locales.")
 
 # ============================================================================
 # CONFIGURACIÓN
@@ -54,8 +70,44 @@ CHECKPOINT_DIR.mkdir(exist_ok=True)
 # FUNCIONES DE UTILIDAD
 # ============================================================================
 
+def load_image_from_url(url):
+    """Carga una imagen desde una URL"""
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        return Image.open(BytesIO(response.content))
+    except Exception as e:
+        st.error(f"Error cargando imagen desde URL: {e}")
+        return None
+
+def load_metadata_from_supabase():
+    """Carga metadata desde Supabase"""
+    images = []
+    try:
+        result = supabase.table('image_metadata').select('*').execute()
+        for row in result.data:
+            images.append({
+                'filename': row['filename'],
+                'source': row.get('source', ''),
+                'photo_id': row.get('photo_id', ''),
+                'city': row['city'],
+                'state': row['state'],
+                'city_target': row['city'],
+                'state_target': row['state'],
+                'lat': float(row['lat']) if row.get('lat') else 0.0,
+                'lon': float(row['lon']) if row.get('lon') else 0.0,
+                'url': row.get('url', ''),
+                'image_url': row.get('image_url', ''),  # URL de Supabase Storage
+                'title': row.get('title', ''),
+                'photographer': row.get('photographer', ''),
+                'local_path': str(IMAGES_DIR / row['filename'])  # Fallback local
+            })
+    except Exception as e:
+        st.error(f"Error cargando desde Supabase: {e}")
+    return images
+
 def load_metadata_from_csv():
-    """Carga metadata desde CSV"""
+    """Carga metadata desde CSV (fallback si no hay Supabase)"""
     images = []
     try:
         with open(METADATA_CSV, 'r', encoding='utf-8') as f:
@@ -72,6 +124,7 @@ def load_metadata_from_csv():
                     'lat': float(row['lat']) if row['lat'] else 0.0,
                     'lon': float(row['lon']) if row['lon'] else 0.0,
                     'url': row.get('url', ''),
+                    'image_url': row.get('image_url', ''),
                     'title': row.get('title', ''),
                     'photographer': row.get('photographer', ''),
                     'local_path': str(IMAGES_DIR / row['filename'])
@@ -187,11 +240,47 @@ def create_balanced_list(images, annotated_files, deleted_files):
 def show_annotation_interface():
     """Interfaz de anotación mejorada con etiquetas personalizadas"""
     
-    st.header("📝 Anotación de Imágenes")
-    st.markdown("Mejora el modelo agregando etiquetas descriptivas y verificando la calidad de las imágenes.")
+    st.header("📝 Anotación de Imágenes - Modo Colaborativo")
     
-    # Cargar datos desde CSV (preferido) o JSON (fallback)
-    if METADATA_CSV.exists():
+    # ============================================================================
+    # SELECTOR DE USUARIO (PERSISTENTE)
+    # ============================================================================
+    
+    USERS = ["Orbe", "Isma", "Kary"]
+    
+    # Inicializar usuario si no existe
+    if 'current_user' not in st.session_state:
+        st.session_state.current_user = None
+    
+    # Mostrar selector solo si no hay usuario seleccionado
+    if st.session_state.current_user is None:
+        st.info("👥 Selecciona tu usuario para comenzar")
+        
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            selected_user = st.selectbox(
+                "Usuario:",
+                options=USERS,
+                key="user_selector"
+            )
+            
+            if st.button("✅ Confirmar Usuario", type="primary", use_container_width=True):
+                st.session_state.current_user = selected_user
+                st.rerun()
+        
+        return
+    
+    # Mostrar usuario actual (bloqueado)
+    st.success(f"👤 Usuario activo: **{st.session_state.current_user}**")
+    st.caption("El usuario está bloqueado para esta sesión. Recarga la página para cambiar.")
+    
+    st.markdown("---")
+    st.markdown("Sistema de asignación: **Round Robin por Estado** - Cada usuario trabaja en los mismos estados pero con diferentes imágenes.")
+    
+    # Cargar datos desde Supabase (preferido) o CSV/JSON (fallback)
+    if USE_SUPABASE:
+        images = load_metadata_from_supabase()
+    elif METADATA_CSV.exists():
         images = load_metadata_from_csv()
     elif METADATA_FILE.exists():
         images = load_metadata_from_json()
@@ -232,37 +321,45 @@ def show_annotation_interface():
     else:
         annotations = {'images': [], 'deleted_images': list(deleted_files)}
     
-    # Crear lista balanceada por estado
-    pending_images = create_balanced_list(images, annotated_files, deleted_files)
+    # Filtrar imágenes pendientes (no anotadas, no eliminadas)
+    pending_images = [
+        img for img in images 
+        if img.get('filename') not in annotated_files 
+        and img.get('filename') not in deleted_files
+    ]
+    
+    # DISTRIBUCIÓN ROUND ROBIN:
+    # 1. Ordenar todas las pendientes por estado (A-Z) y luego por ciudad
+    pending_sorted = sorted(pending_images, key=lambda x: (x.get('state', ''), x.get('city', '')))
+    
+    # 2. Asignar a cada usuario según el índice: idx % 3
+    user_index = USERS.index(st.session_state.current_user)
+    user_queue = [img for idx, img in enumerate(pending_sorted) if idx % 3 == user_index]
     
     # Estadísticas en cards
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("📥 Total", len(images))
     col2.metric("✅ Anotadas", len(annotated_files))
     col3.metric("🗑️ Eliminadas", len(deleted_files))
     col4.metric("⏳ Pendientes", len(pending_images))
+    col5.metric(f"👤 Tu cola", len(user_queue))
     
-    # Mostrar estados únicos pendientes
-    unique_states = len(set(img.get('state', 'Unknown') for img in pending_images))
-    st.caption(f"🗺️ Estados diferentes: {unique_states}")
+    # Mostrar estados únicos en la cola del usuario
+    unique_states = len(set(img.get('state', 'Unknown') for img in user_queue))
+    st.caption(f"🗺️ Estados en tu cola: {unique_states}")
     
-    if not pending_images:
-        st.success("✅ ¡Todas las imágenes están procesadas!")
+    if not user_queue:
+        st.success(f"✅ ¡{st.session_state.current_user}, has completado todas tus imágenes asignadas!")
         st.balloons()
         
-        if st.button("🔄 Revisar imágenes anotadas"):
-            st.session_state.review_mode = True
+        if st.button("🔄 Cambiar de usuario"):
+            st.session_state.current_user = None
             st.rerun()
         return
     
-    # Inicializar estado
-    if 'current_idx' not in st.session_state:
-        st.session_state.current_idx = 0
-    
-    if st.session_state.current_idx >= len(pending_images):
-        st.session_state.current_idx = len(pending_images) - 1
-    
-    current_img = pending_images[st.session_state.current_idx]
+    # SIEMPRE trabajar con la primera imagen de la cola del usuario
+    # (Esto garantiza que se mantenga el orden por estado)
+    current_img = user_queue[0]
     
     # Normalizar filename si viene de local_path
     if 'filename' not in current_img and 'local_path' in current_img:
@@ -300,19 +397,26 @@ def show_annotation_interface():
     col_left, col_right = st.columns([3, 2])
     
     with col_left:
-        st.subheader(f"🖼️ Imagen {st.session_state.current_idx + 1} de {len(pending_images)}")
+        st.subheader(f"🖼️ Imagen 1 de {len(user_queue)}")
+        st.caption(f"Total pendientes en el sistema: {len(pending_images)}")
         
-        if img_path.exists():
+        # Intentar cargar desde Supabase Storage primero
+        image = None
+        if USE_SUPABASE and current_img.get('image_url'):
+            with st.spinner("Cargando imagen desde Supabase..."):
+                image = load_image_from_url(current_img['image_url'])
+        
+        # Fallback: cargar desde archivo local
+        if image is None and img_path.exists():
             try:
                 image = Image.open(img_path)
-                st.image(image, width='stretch')
             except Exception as e:
                 st.error(f"❌ Imagen corrupta o inválida: {current_img.get('filename', 'sin nombre')}")
                 st.caption(f"Error: {str(e)}")
                 
                 col_auto1, col_auto2 = st.columns(2)
                 with col_auto1:
-                    if st.button("🗑️ Eliminar automáticamente", type="primary", width='stretch'):
+                    if st.button("🗑️ Eliminar automáticamente", type="primary", key='delete_corrupt'):
                         current_filename = current_img.get('filename', '')
                         
                         # Marcar como eliminada
@@ -335,11 +439,13 @@ def show_annotation_interface():
                         st.rerun()
                 
                 with col_auto2:
-                    if st.button("⏭️ Omitir por ahora", width='stretch'):
-                        if st.session_state.current_idx < len(pending_images) - 1:
-                            st.session_state.current_idx += 1
-                            st.rerun()
+                    if st.button("⏭️ Omitir por ahora", key='skip_corrupt'):
+                        st.rerun()
                 return
+        
+        # Mostrar imagen si se cargó correctamente
+        if image:
+            st.image(image, use_container_width=True)
             
             # Metadata de la imagen
             with st.expander("📋 Metadata de la imagen", expanded=True):
@@ -352,15 +458,16 @@ def show_annotation_interface():
                 with col_m1:
                     st.write(f"**Archivo:** `{current_img.get('filename', 'Sin nombre')}`")
                     st.write(f"**Fuente:** {current_img.get('source', 'Desconocida')}")
-                    st.write(f"**Tamaño:** {current_img.get('width', 0)} × {current_img.get('height', 0)} px")
+                    if current_img.get('image_url'):
+                        st.caption("🌐 Cargada desde Supabase Storage")
                 with col_m2:
                     st.write(f"**Coordenadas:** ({current_img.get('lat', 0):.4f}, {current_img.get('lon', 0):.4f})")
-                    size_kb = current_img.get('size', 0) / 1024 if current_img.get('size') else 0
-                    st.write(f"**Tamaño archivo:** {size_kb:.1f} KB")
-                    st.write(f"**URL original:** [{current_img.get('title', 'Ver')}]({current_img.get('url', '#')})")
+                    if current_img.get('url'):
+                        st.write(f"**URL original:** [{current_img.get('title', 'Ver')}]({current_img.get('url', '#')})")
         else:
             st.error(f"❌ Imagen no encontrada: {current_img.get('filename', 'sin nombre')}")
-            if st.button("Marcar como perdida y continuar"):
+            st.caption(f"No se pudo cargar desde Supabase ni desde archivo local")
+            if st.button("Marcar como perdida y continuar", key='mark_missing'):
                 annotations.setdefault('deleted_images', []).append(current_img.get('filename', ''))
                 save_annotations(annotations)
                 # No avanzar índice - reconstruir lista
@@ -375,8 +482,8 @@ def show_annotation_interface():
         state_name = current_img.get('state_target', current_img.get('state', ''))
         st.info(f"**Ciudad esperada:** {city_name}, {state_name}")
         
-        # Crear clave única basada en el índice actual para forzar reinicio del formulario
-        form_key = f"form_{st.session_state.current_idx}"
+        # Crear clave única basada en el filename para el formulario
+        form_key = f"form_{current_img.get('filename', 'default')}"
         
         # Verificación
         correct_city = st.radio(
@@ -449,14 +556,9 @@ def show_annotation_interface():
         st.divider()
         
         # Botones de acción
-        col_b1, col_b2, col_b3, col_b4 = st.columns(4)
+        col_b1, col_b2, col_b3 = st.columns(3)
         
         with col_b1:
-            if st.button("⬅️ Anterior", width='stretch', disabled=(st.session_state.current_idx == 0)):
-                st.session_state.current_idx -= 1
-                st.rerun()
-        
-        with col_b2:
             if st.button("💾 Guardar", type="primary", width='stretch'):
                 # Verificar si esta imagen ya fue anotada
                 current_filename = current_img.get('filename', '')
@@ -493,7 +595,7 @@ def show_annotation_interface():
                         'confidence': confidence,
                         'notes': notes,
                         'annotated_at': datetime.now().isoformat(),
-                        'annotated_by': annotator
+                        'annotated_by': st.session_state.current_user  # ✅ Usuario actual
                     }
                     
                     # Guardar primero en CSV (fuente principal)
@@ -505,68 +607,35 @@ def show_annotation_interface():
                     
                     st.success("✅ Anotación guardada (CSV ✓ + JSON ✓)")
                     
-                    # Siguiente imagen
-                    if st.session_state.current_idx < len(pending_images) - 1:
-                        st.session_state.current_idx += 1
-                        st.rerun()
-                    else:
-                        st.balloons()
-                        st.success("🎉 ¡Todas las imágenes anotadas!")
+                    # Recargar interfaz para siguiente imagen en la cola
+                    st.rerun()
+        
+        with col_b2:
+            if st.button("⏭️ Omitir", width='stretch'):
+                # Simplemente recargar para mostrar siguiente en cola
+                st.rerun()
         
         with col_b3:
-            if st.button("⏭️ Omitir", width='stretch'):
-                if st.session_state.current_idx < len(pending_images) - 1:
-                    st.session_state.current_idx += 1
-                    st.rerun()
-        
-        with col_b4:
-            # Inicializar estado de confirmación de eliminación
-            if 'confirm_delete' not in st.session_state:
-                st.session_state.confirm_delete = False
-            
-            if not st.session_state.confirm_delete:
-                if st.button("🗑️ Eliminar", width='stretch', help="Eliminar imagen de baja calidad"):
-                    st.session_state.confirm_delete = True
-                    st.rerun()
-            else:
-                st.warning("⚠️ ¿Estás seguro de eliminar esta imagen?")
-                col_yes, col_no = st.columns(2)
-                with col_yes:
-                    if st.button("✅ Sí, eliminar", width='stretch', type="primary"):
-                        current_filename = current_img.get('filename', '')
-                        
-                        # Agregar a lista de eliminadas en JSON
-                        annotations.setdefault('deleted_images', []).append(current_filename)
-                        save_annotations(annotations)
-                        
-                        # Guardar en archivo de texto para lectura rápida
-                        deleted_file = MINING_DIR / 'deleted_images.txt'
-                        with open(deleted_file, 'a', encoding='utf-8') as f:
-                            f.write(f"{current_filename}\n")
-                        
-                        # Eliminar archivo físico
-                        try:
-                            img_path.unlink()
-                            print(f"✅ Imagen eliminada del disco: {current_filename}")
-                        except Exception as e:
-                            print(f"⚠️ No se pudo eliminar el archivo físico: {e}")
-                        
-                        # Resetear estado de confirmación
-                        st.session_state.confirm_delete = False
-                        
-                        # No avanzar índice - el rerun reconstruirá la lista balanceada
-                        # Si había otra imagen del mismo estado, aparecerá en la misma posición
-                        # Si no, continuará con el siguiente estado
-                        st.rerun()
-                with col_no:
-                    if st.button("❌ Cancelar", width='stretch'):
-                        st.session_state.confirm_delete = False
-                        st.rerun()
+            if st.button("🗑️ Eliminar", width='stretch', help="Eliminar imagen de baja calidad"):
+                current_filename = current_img.get('filename', '')
+                
+                # Agregar a lista de eliminadas en JSON
+                annotations.setdefault('deleted_images', []).append(current_filename)
+                save_annotations(annotations)
+                
+                # Guardar en archivo de texto para lectura rápida
+                deleted_file = MINING_DIR / 'deleted_images.txt'
+                with open(deleted_file, 'a', encoding='utf-8') as f:
+                    f.write(f"{current_filename}\n")
+                
+                st.success(f"🗑️ Imagen eliminada")
+                
+                # Recargar interfaz para siguiente imagen
+                st.rerun()
     
-    # Barra de progreso
-    progress = (st.session_state.current_idx + 1) / len(pending_images)
-    st.progress(progress)
-    st.caption(f"Progreso: {progress*100:.1f}% ({st.session_state.current_idx + 1}/{len(pending_images)})")
+    # Navegación con teclado
+    st.markdown("---")
+    st.caption("💡 **Tip:** Usa las teclas ←/→ para navegar entre imágenes")
 
 def save_annotations(annotations):
     """Guarda anotaciones con backup"""

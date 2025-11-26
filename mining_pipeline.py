@@ -16,12 +16,15 @@ import hashlib
 import requests
 import csv
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
 from urllib.parse import quote
 from bs4 import BeautifulSoup
 import argparse
+from dotenv import load_dotenv
+from supabase import create_client, Client
 
 # ============================================================================
 # CONFIGURACIÓN
@@ -38,11 +41,49 @@ CITIES_CSV = DATA_DIR / "cities_mx.csv"
 # Crear directorios
 IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
+# Configurar Supabase
+load_dotenv()
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+if SUPABASE_URL and SUPABASE_KEY:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    USE_SUPABASE = True
+    BUCKET_NAME = "geolocalization-images"
+else:
+    USE_SUPABASE = False
+    print("⚠️ Supabase no configurado. Solo se guardarán archivos locales.")
+
 # APIs gratuitas
 PEXELS_API_KEY = "uaPqaLWpEWGCmQvywCUm7zTeWZrZJQFKkLdtRnxU4WhEXUS4zer3heNK"
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 }
+
+# ============================================================================
+# UTILIDADES
+# ============================================================================
+
+def sanitize_name(text):
+    """Sanitiza nombres de archivo: lowercase, sin acentos, underscores"""
+    # Normalizar unicode (descomponer acentos)
+    text = unicodedata.normalize('NFD', text)
+    # Filtrar solo ASCII
+    text = ''.join(c for c in text if unicodedata.category(c) != 'Mn')
+    # Reemplazos manuales adicionales
+    replacements = {
+        'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u',
+        'Á': 'a', 'É': 'e', 'Í': 'i', 'Ó': 'o', 'Ú': 'u',
+        'ñ': 'n', 'Ñ': 'n', ' ': '_', '-': '_'
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    # Lowercase y limpiar caracteres no válidos
+    text = ''.join(c if c.isalnum() or c == '_' else '_' for c in text)
+    # Limpiar múltiples underscores
+    while '__' in text:
+        text = text.replace('__', '_')
+    return text.lower().strip('_')
 
 # ============================================================================
 # FUNCIONES DE MINERÍA
@@ -112,7 +153,7 @@ def get_image_hash(image_data):
     return hashlib.md5(image_data).hexdigest()
 
 def download_image(url, save_path, metadata_entry):
-    """Descarga imagen con validación"""
+    """Descarga imagen con validación y sube a Supabase Storage"""
     try:
         response = requests.get(url, headers=HEADERS, timeout=15)
         response.raise_for_status()
@@ -127,13 +168,53 @@ def download_image(url, save_path, metadata_entry):
         if size < 50000 or size > 10000000:
             return False
         
-        # Guardar imagen
+        # Guardar imagen localmente (temporal)
         with open(save_path, 'wb') as f:
             f.write(response.content)
         
         metadata_entry['hash'] = get_image_hash(response.content)
         metadata_entry['size'] = size
         metadata_entry['downloaded_at'] = datetime.now().isoformat()
+        
+        # Subir a Supabase Storage si está configurado
+        if USE_SUPABASE:
+            try:
+                filename = save_path.name
+                
+                # Subir archivo
+                with open(save_path, 'rb') as f:
+                    supabase.storage.from_(BUCKET_NAME).upload(
+                        filename,
+                        f.read(),
+                        file_options={"content-type": "image/jpeg", "upsert": "true"}
+                    )
+                
+                # Obtener URL pública
+                image_url = supabase.storage.from_(BUCKET_NAME).get_public_url(filename)
+                metadata_entry['image_url'] = image_url
+                
+                # Guardar metadata en base de datos
+                supabase.table('image_metadata').upsert({
+                    'filename': filename,
+                    'image_url': image_url,
+                    'city': metadata_entry.get('city'),
+                    'state': metadata_entry.get('state'),
+                    'lat': metadata_entry.get('lat'),
+                    'lon': metadata_entry.get('lon'),
+                    'source': metadata_entry.get('source'),
+                    'photo_id': metadata_entry.get('photo_id'),
+                    'url': metadata_entry.get('url'),
+                    'title': metadata_entry.get('title'),
+                    'photographer': metadata_entry.get('photographer'),
+                    'width': metadata_entry.get('width', 0),
+                    'height': metadata_entry.get('height', 0),
+                    'size': size,
+                    'hash': metadata_entry['hash']
+                }, on_conflict='filename').execute()
+                
+            except Exception as e:
+                print(f"    ⚠️  Error subiendo a Supabase: {e}")
+                # Continuar aunque falle Supabase, archivo local guardado
         
         return True
     except Exception as e:
@@ -310,6 +391,10 @@ def mine_city(city_name, state, lat, lon, images_per_source=20):
     if 'images' not in metadata:
         metadata['images'] = []
     
+    # Sanitizar nombres para el formato de archivo
+    city_sanitized = sanitize_name(city_name)
+    state_sanitized = sanitize_name(state)
+    
     city_key = f"{city_name}_{state}"
     
     if city_key not in metadata['cities']:
@@ -339,9 +424,9 @@ def mine_city(city_name, state, lat, lon, images_per_source=20):
             if new_images >= images_per_source:
                 break
             
-            # Crear nombre de archivo único
+            # Crear nombre de archivo único con nombres sanitizados
             source_prefix = img['source']
-            filename = f"{source_prefix}_{city_key}_{idx}_{int(time.time())}.jpg"
+            filename = f"{source_prefix}_{city_sanitized}_{state_sanitized}_{idx}_{int(time.time())}.jpg"
             save_path = IMAGES_DIR / filename
             
             print(f"    ⬇️  Descargando {source_prefix}/{img['title'][:30]}...", end=' ')
@@ -353,8 +438,10 @@ def mine_city(city_name, state, lat, lon, images_per_source=20):
                 'lat': lat,
                 'lon': lon,
                 'source': img['source'],
+                'photo_id': str(img.get('id', '')),
                 'url': img['url'],
                 'title': img.get('title', ''),
+                'photographer': img.get('photographer', ''),
                 'width': img.get('width', 0),
                 'height': img.get('height', 0)
             }
