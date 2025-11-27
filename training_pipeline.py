@@ -829,11 +829,15 @@ def show_training_interface():
     
     st.divider()
     
-    # Estimación
+    # Estimación y detección de GPU
     device = "GPU" if torch.cuda.is_available() else "CPU"
-    st.info(f"🖥️ **Dispositivo:** {device}")
     
-    if device == "CPU":
+    if torch.cuda.is_available():
+        gpu_name = torch.cuda.get_device_name(0)
+        gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        st.success(f"🎮 **GPU Detectada:** {gpu_name} ({gpu_memory:.1f} GB VRAM)")
+    else:
+        st.info(f"🖥️ **Dispositivo:** {device}")
         st.warning("⚠️ Entrenamiento en CPU será lento. Considera usar Google Colab con GPU.")
     
     estimated_time_min = epochs * (5 if device == "GPU" else 15)
@@ -1009,6 +1013,7 @@ class GeoDataset(Dataset):
     def __init__(self, annotations, processor, min_quality=2, min_confidence=50):
         self.processor = processor
         self.samples = []
+        self.use_supabase = USE_SUPABASE
         
         # Cargar ciudades
         cities = {}
@@ -1018,22 +1023,45 @@ class GeoDataset(Dataset):
                 cities[f"{row['name']}_{row['state']}"] = row
         
         # Filtrar por calidad y confianza
-        for ann in annotations['images']:
-            if (ann.get('quality', 0) >= min_quality and 
-                ann.get('confidence', 0) >= min_confidence and
-                ann.get('correct_city') == 'Sí'):
-                
-                img_path = IMAGES_DIR / ann['filename']
-                if img_path.exists():
-                    city_key = f"{ann['city']}_{ann['state']}"
-                    if city_key in cities:
-                        self.samples.append({
-                            'image_path': img_path,
-                            'city': ann['city'],
-                            'state': ann['state'],
-                            'tags': cities[city_key].get('tags', '')
-                        })
+        print(f"Filtrando anotaciones: quality>={min_quality}, confidence>={min_confidence}")
+        filtered_count = 0
+        correct_city_yes = 0
+        has_url_or_local = 0
+        in_cities_csv = 0
         
+        for ann in annotations['images']:
+            quality = ann.get('quality', 0)
+            confidence = ann.get('confidence', 0)
+            correct = ann.get('correct_city', '')
+            
+            if quality >= min_quality and confidence >= min_confidence:
+                filtered_count += 1
+                if correct == 'Sí':
+                    correct_city_yes += 1
+                    # Prioridad: archivo local > Supabase Storage
+                    img_path = IMAGES_DIR / ann['filename']
+                    image_url = ann.get('image_url', '') if self.use_supabase else None
+                    
+                    # Solo incluir si existe localmente O tiene URL de Supabase
+                    if img_path.exists() or (image_url and self.use_supabase):
+                        has_url_or_local += 1
+                        city_key = f"{ann['city']}_{ann['state']}"
+                        if city_key in cities:
+                            in_cities_csv += 1
+                            self.samples.append({
+                                'image_path': img_path if img_path.exists() else None,
+                                'image_url': image_url,
+                                'filename': ann['filename'],
+                                'city': ann['city'],
+                                'state': ann['state'],
+                                'tags': cities[city_key].get('tags', '')
+                            })
+        
+        print(f"Debug - Total anotaciones: {len(annotations['images'])}")
+        print(f"Debug - Pasan filtro quality/confidence: {filtered_count}")
+        print(f"Debug - Con correct_city='Sí': {correct_city_yes}")
+        print(f"Debug - Con URL o archivo local: {has_url_or_local}")
+        print(f"Debug - En cities.csv: {in_cities_csv}")
         print(f"✅ Dataset creado: {len(self.samples)} imágenes válidas")
     
     def __len__(self):
@@ -1042,8 +1070,23 @@ class GeoDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.samples[idx]
         
-        # Cargar imagen
-        image = Image.open(sample['image_path']).convert('RGB')
+        # Cargar imagen: desde archivo local o desde Supabase
+        if sample['image_path'] and sample['image_path'].exists():
+            # Carga local (más rápido)
+            image = Image.open(sample['image_path']).convert('RGB')
+        elif sample['image_url']:
+            # Descargar desde Supabase Storage
+            try:
+                image = load_image_from_url(sample['image_url'])
+                if image is None:
+                    raise ValueError(f"No se pudo cargar imagen desde URL: {sample['filename']}")
+                image = image.convert('RGB')
+            except Exception as e:
+                print(f"⚠️ Error cargando {sample['filename']} desde Supabase: {e}")
+                # Retornar imagen placeholder en caso de error
+                image = Image.new('RGB', (224, 224), color='black')
+        else:
+            raise FileNotFoundError(f"No se encontró imagen para {sample['filename']}")
         
         # Crear prompts variados
         prompts = [
