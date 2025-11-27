@@ -734,16 +734,78 @@ def show_training_interface():
     
     st.header("🔬 Fine-tuning del Modelo")
     
-    # Verificar anotaciones
-    if not ANNOTATIONS_FILE.exists():
-        st.warning("⚠️ No hay anotaciones disponibles")
-        st.info("Primero debes anotar imágenes en la sección **📝 Anotación**")
-        return
+    # Cargar anotaciones desde Supabase (prioridad) o archivo local
+    annotations = None
+    total_annotations = 0
     
-    with open(ANNOTATIONS_FILE, 'r', encoding='utf-8') as f:
-        annotations = json.load(f)
+    if USE_SUPABASE:
+        try:
+            st.info("🌐 Cargando anotaciones desde Supabase...")
+            result = supabase.table('annotations').select('*').execute()
+            
+            # Convertir formato de Supabase a formato JSON esperado
+            annotations = {'images': [], 'deleted_images': []}
+            
+            for row in result.data:
+                # Reconstruir estructura de elementos
+                elements = {
+                    'landmarks': row.get('has_landmarks', False),
+                    'architecture': row.get('has_architecture', False),
+                    'signs': row.get('has_signs', False),
+                    'nature': row.get('has_nature', False),
+                    'urban': row.get('has_urban', False),
+                    'beach': row.get('has_beach', False),
+                    'people': row.get('has_people', False),
+                    'vehicles': row.get('has_vehicles', False),
+                    'text': row.get('has_text', False)
+                }
+                
+                # Obtener URL de imagen
+                img_url = None
+                if row['filename']:
+                    try:
+                        metadata = supabase.table('image_metadata').select('image_url').eq('filename', row['filename']).limit(1).execute()
+                        if metadata.data:
+                            img_url = metadata.data[0].get('image_url')
+                    except:
+                        pass
+                
+                annotations['images'].append({
+                    'filename': row['filename'],
+                    'city': row.get('city', ''),
+                    'state': row.get('state', ''),
+                    'lat': row.get('lat', 0),
+                    'lon': row.get('lon', 0),
+                    'correct_city': row.get('correct_city', ''),
+                    'quality': row.get('quality', 0),
+                    'confidence': row.get('confidence', 0),
+                    'elements': elements,
+                    'custom_tags': row.get('custom_tags', []),
+                    'notes': row.get('notes', ''),
+                    'annotated_by': row.get('annotated_by', 'Unknown'),
+                    'annotated_at': row.get('annotated_at', ''),
+                    'image_url': img_url
+                })
+            
+            total_annotations = len(annotations['images'])
+            st.success(f"✅ {total_annotations} anotaciones cargadas desde Supabase")
+            
+        except Exception as e:
+            st.error(f"❌ Error cargando desde Supabase: {e}")
+            annotations = None
     
-    total_annotations = len(annotations.get('images', []))
+    # Fallback a archivo local si Supabase falla o está deshabilitado
+    if annotations is None:
+        if not ANNOTATIONS_FILE.exists():
+            st.warning("⚠️ No hay anotaciones disponibles")
+            st.info("Primero debes anotar imágenes en la sección **📝 Anotación**")
+            return
+        
+        with open(ANNOTATIONS_FILE, 'r', encoding='utf-8') as f:
+            annotations = json.load(f)
+        
+        total_annotations = len(annotations.get('images', []))
+        st.info(f"📄 {total_annotations} anotaciones cargadas desde archivo local")
     
     if total_annotations < 50:
         st.warning(f"⚠️ Solo tienes {total_annotations} anotaciones")
