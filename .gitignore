@@ -41,6 +41,7 @@ data/mining/images/
 
 # Model files
 model/*.pth
+model/checkpoints/*.pth
 !model/.gitkeep
 
 # Logs

@@ -965,8 +965,14 @@ def show_statistics_interface():
     for ann in annotations_data:
         custom_tags = ann.get('custom_tags', '')
         if custom_tags:
-            # custom_tags es un string separado por comas en Supabase
-            tags = [tag.strip() for tag in custom_tags.split(',') if tag.strip()]
+            # Manejar tanto string como lista
+            if isinstance(custom_tags, str):
+                tags = [tag.strip() for tag in custom_tags.split(',') if tag.strip()]
+            elif isinstance(custom_tags, list):
+                tags = [tag.strip() for tag in custom_tags if tag and tag.strip()]
+            else:
+                tags = []
+            
             for tag in tags:
                 tags_count[tag] = tags_count.get(tag, 0) + 1
     

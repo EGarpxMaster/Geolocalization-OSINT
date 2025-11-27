@@ -99,14 +99,37 @@ def load_city_index(rel_path: str):
     return payload
 
 @st.cache_resource
-def load_clip(model_name: str):
+def load_clip(model_name: str, use_finetuned: bool = True):
     """Carga modelo CLIP con optimización de memoria"""
     from transformers import CLIPProcessor, CLIPModel
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    # Cargar modelo en modo eval (ahorra memoria)
+    # Cargar modelo base
     model = CLIPModel.from_pretrained(model_name).to(device)
+    
+    # Cargar pesos fine-tuneados si existen y se solicita
+    if use_finetuned:
+        finetuned_path = Path("model/modelo_finetuned.pth")
+        if finetuned_path.exists():
+            try:
+                checkpoint = torch.load(finetuned_path, map_location=device)
+                
+                # Cargar state_dict (puede ser checkpoint completo o solo state_dict)
+                if 'model_state_dict' in checkpoint:
+                    model.load_state_dict(checkpoint['model_state_dict'])
+                    st.sidebar.success(f"✅ Modelo fine-tuneado cargado (epoch {checkpoint.get('epoch', '?')})")
+                else:
+                    model.load_state_dict(checkpoint)
+                    st.sidebar.success("✅ Modelo fine-tuneado cargado")
+            except Exception as e:
+                st.sidebar.warning(f"⚠️ No se pudo cargar modelo fine-tuneado: {e}")
+                st.sidebar.info("Usando modelo base CLIP")
+        else:
+            st.sidebar.info("📦 Usando modelo base CLIP (no fine-tuneado)")
+    else:
+        st.sidebar.info("📦 Usando modelo base CLIP")
+    
     model.eval()  # Desactiva dropout y batch norm
     
     # No guardar gradientes (reduce memoria 2x)
@@ -162,7 +185,11 @@ st.caption("Sube una imagen; se estiman las **top-K** ciudades de México, con r
 
 # Parámetros (sidebar)
 with st.sidebar:
-    st.markdown("### Parámetros de inferencia")
+    st.markdown("### ⚙️ Configuración del Modelo")
+    use_finetuned = st.checkbox("🎯 Usar modelo fine-tuneado", value=True, 
+                                help="Usar el modelo entrenado con anotaciones locales (más preciso)")
+    
+    st.markdown("### 📊 Parámetros de inferencia")
     base_area_km2 = st.number_input("Área base (km²)", min_value=10.0, max_value=300.0, value=60.0, step=5.0)
     topk = st.slider("Top-K ciudades", min_value=1, max_value=10, value=3)
     temperature = st.slider("Temperatura (softmax)", min_value=0.1, max_value=2.0, value=0.7, step=0.05)
@@ -192,7 +219,7 @@ STATE_EMBEDS_T = IDX["state_embeds"]  # dict state -> tensor[D]
 CITY_EMBEDS = CITY_EMBEDS_T.numpy()  # [N, D]
 STATE_EMBEDS = {k: v.numpy() for k, v in STATE_EMBEDS_T.items()}
 
-MODEL, PROCESSOR, DEVICE = load_clip(MODEL_NAME)
+MODEL, PROCESSOR, DEVICE = load_clip(MODEL_NAME, use_finetuned=use_finetuned)
 
 # Uploader
 uploaded = st.file_uploader("📷 Sube una imagen (jpg, jpeg, png)", type=["jpg", "jpeg", "png"])
