@@ -620,7 +620,38 @@ def show_annotation_interface():
                     annotations['images'].append(annotation)
                     save_annotations(annotations)
                     
-                    st.success("✅ Anotación guardada (CSV ✓ + JSON ✓)")
+                    # Guardar en Supabase si está habilitado
+                    if USE_SUPABASE:
+                        try:
+                            supabase.table('annotations').insert({
+                                'filename': annotation['filename'],
+                                'city': annotation['city'],
+                                'state': annotation['state'],
+                                'lat': annotation['lat'],
+                                'lon': annotation['lon'],
+                                'correct_city': annotation['correct_city'],
+                                'quality': annotation['quality'],
+                                'confidence': annotation['confidence'],
+                                'has_landmarks': annotation['elements'].get('landmarks', False),
+                                'has_architecture': annotation['elements'].get('architecture', False),
+                                'has_signs': annotation['elements'].get('signs', False),
+                                'has_nature': annotation['elements'].get('nature', False),
+                                'has_urban': annotation['elements'].get('urban', False),
+                                'has_beach': annotation['elements'].get('beach', False),
+                                'has_people': annotation['elements'].get('people', False),
+                                'has_vehicles': annotation['elements'].get('vehicles', False),
+                                'has_text': annotation['elements'].get('text', False),
+                                'custom_tags': annotation['custom_tags'],
+                                'notes': annotation['notes'],
+                                'annotated_at': annotation['annotated_at'],
+                                'annotated_by': annotation['annotated_by']
+                            }).execute()
+                            st.success("✅ Anotación guardada (CSV ✓ + JSON ✓ + Supabase ✓)")
+                        except Exception as e:
+                            st.warning(f"⚠️ Guardado en Supabase falló: {e}")
+                            st.success("✅ Anotación guardada (CSV ✓ + JSON ✓)")
+                    else:
+                        st.success("✅ Anotación guardada (CSV ✓ + JSON ✓)")
                     
                     # Limpiar cualquier estado temporal y recargar
                     st.rerun()
@@ -643,7 +674,20 @@ def show_annotation_interface():
                 with open(deleted_file, 'a', encoding='utf-8') as f:
                     f.write(f"{current_filename}\n")
                 
-                st.success(f"🗑️ Imagen eliminada")
+                # Guardar en Supabase si está habilitado
+                if USE_SUPABASE:
+                    try:
+                        supabase.table('deleted_images').insert({
+                            'filename': current_filename,
+                            'deleted_at': datetime.now().isoformat(),
+                            'deleted_by': st.session_state.current_user
+                        }).execute()
+                        st.success(f"🗑️ Imagen eliminada (Local ✓ + Supabase ✓)")
+                    except Exception as e:
+                        # Puede fallar por RLS policy, pero no es crítico
+                        st.success(f"🗑️ Imagen eliminada (Local ✓)")
+                else:
+                    st.success(f"🗑️ Imagen eliminada")
                 
                 # Limpiar estado y recargar
                 st.rerun()
@@ -743,6 +787,14 @@ def show_training_interface():
             st.info("🌐 Cargando anotaciones desde Supabase...")
             result = supabase.table('annotations').select('*').execute()
             
+            # Obtener TODAS las URLs de imagen en una sola consulta
+            filenames = [row['filename'] for row in result.data]
+            metadata_result = supabase.table('image_metadata').select('filename, image_url').in_('filename', filenames).execute()
+            
+            # Crear mapa filename -> URL
+            url_map = {row['filename']: row['image_url'] for row in metadata_result.data}
+            st.info(f"🔗 {len(url_map)} URLs de imágenes obtenidas")
+            
             # Convertir formato de Supabase a formato JSON esperado
             annotations = {'images': [], 'deleted_images': []}
             
@@ -760,16 +812,6 @@ def show_training_interface():
                     'text': row.get('has_text', False)
                 }
                 
-                # Obtener URL de imagen
-                img_url = None
-                if row['filename']:
-                    try:
-                        metadata = supabase.table('image_metadata').select('image_url').eq('filename', row['filename']).limit(1).execute()
-                        if metadata.data:
-                            img_url = metadata.data[0].get('image_url')
-                    except:
-                        pass
-                
                 annotations['images'].append({
                     'filename': row['filename'],
                     'city': row.get('city', ''),
@@ -784,14 +826,16 @@ def show_training_interface():
                     'notes': row.get('notes', ''),
                     'annotated_by': row.get('annotated_by', 'Unknown'),
                     'annotated_at': row.get('annotated_at', ''),
-                    'image_url': img_url
+                    'image_url': url_map.get(row['filename'], '')  # Usar URL del mapa
                 })
             
             total_annotations = len(annotations['images'])
-            st.success(f"✅ {total_annotations} anotaciones cargadas desde Supabase")
+            urls_available = sum(1 for img in annotations['images'] if img.get('image_url'))
+            st.success(f"✅ {total_annotations} anotaciones | {urls_available} con URL")
             
         except Exception as e:
             st.error(f"❌ Error cargando desde Supabase: {e}")
+            st.exception(e)
             annotations = None
     
     # Fallback a archivo local si Supabase falla o está deshabilitado
@@ -1007,8 +1051,8 @@ def show_statistics_interface():
 # DATASET PERSONALIZADO
 # ============================================================================
 
-class GeoDataset(Dataset):
-    """Dataset personalizado para fine-tuning de CLIP"""
+class GeoDatasetV2(Dataset):
+    """Dataset personalizado para fine-tuning de CLIP - V2 con Supabase"""
     
     def __init__(self, annotations, processor, min_quality=2, min_confidence=50):
         self.processor = processor
@@ -1022,44 +1066,42 @@ class GeoDataset(Dataset):
             for row in reader:
                 cities[f"{row['name']}_{row['state']}"] = row
         
-        # Filtrar por calidad y confianza
+        # Filtrar por calidad y confianza (SIN verificar correct_city)
         print(f"Filtrando anotaciones: quality>={min_quality}, confidence>={min_confidence}")
         filtered_count = 0
-        correct_city_yes = 0
         has_url_or_local = 0
         in_cities_csv = 0
         
         for ann in annotations['images']:
             quality = ann.get('quality', 0)
             confidence = ann.get('confidence', 0)
-            correct = ann.get('correct_city', '')
             
             if quality >= min_quality and confidence >= min_confidence:
                 filtered_count += 1
-                if correct == 'Sí':
-                    correct_city_yes += 1
-                    # Prioridad: archivo local > Supabase Storage
-                    img_path = IMAGES_DIR / ann['filename']
-                    image_url = ann.get('image_url', '') if self.use_supabase else None
+                # Prioridad: archivo local > Supabase Storage
+                img_path = IMAGES_DIR / ann['filename']
+                image_url = ann.get('image_url', '') if self.use_supabase else None
+                
+                # Solo incluir si existe localmente O tiene URL de Supabase
+                if img_path.exists() or (image_url and self.use_supabase):
+                    has_url_or_local += 1
+                    city_key = f"{ann['city']}_{ann['state']}"
+                    # TEMPORAL: Agregar ciudades aunque no estén en CSV
+                    tags = cities.get(city_key, {}).get('tags', '') if city_key in cities else ''
+                    if city_key in cities:
+                        in_cities_csv += 1
                     
-                    # Solo incluir si existe localmente O tiene URL de Supabase
-                    if img_path.exists() or (image_url and self.use_supabase):
-                        has_url_or_local += 1
-                        city_key = f"{ann['city']}_{ann['state']}"
-                        if city_key in cities:
-                            in_cities_csv += 1
-                            self.samples.append({
-                                'image_path': img_path if img_path.exists() else None,
-                                'image_url': image_url,
-                                'filename': ann['filename'],
-                                'city': ann['city'],
-                                'state': ann['state'],
-                                'tags': cities[city_key].get('tags', '')
-                            })
+                    self.samples.append({
+                        'image_path': img_path if img_path.exists() else None,
+                        'image_url': image_url,
+                        'filename': ann['filename'],
+                        'city': ann['city'],
+                        'state': ann['state'],
+                        'tags': tags
+                    })
         
         print(f"Debug - Total anotaciones: {len(annotations['images'])}")
         print(f"Debug - Pasan filtro quality/confidence: {filtered_count}")
-        print(f"Debug - Con correct_city='Sí': {correct_city_yes}")
         print(f"Debug - Con URL o archivo local: {has_url_or_local}")
         print(f"Debug - En cities.csv: {in_cities_csv}")
         print(f"✅ Dataset creado: {len(self.samples)} imágenes válidas")
@@ -1088,38 +1130,37 @@ class GeoDataset(Dataset):
         else:
             raise FileNotFoundError(f"No se encontró imagen para {sample['filename']}")
         
-        # Crear prompts variados
-        prompts = [
-            f"a photo of {sample['city']}, {sample['state']}, Mexico",
-            f"{sample['city']}, {sample['state']}",
-            f"landscape of {sample['city']}, Mexico",
-            f"{sample['city']} city view",
-        ]
+        # Crear UN SOLO prompt por imagen (no múltiples)
+        # Esto evita el error de batch size mismatch
+        prompt = f"a photo of {sample['city']}, {sample['state']}, Mexico"
         
-        # Agregar tags si existen
-        if sample['tags']:
-            tags = sample['tags'].split(',')
-            for tag in tags[:3]:
-                prompts.append(f"{tag.strip()} in {sample['city']}")
-        
-        # Procesar con CLIP
+        # Procesar con CLIP - UNA imagen, UN texto
         inputs = self.processor(
-            text=prompts,
+            text=prompt,  # String directo (no lista)
             images=image,
             return_tensors="pt",
-            padding=True,
-            truncation=True
+            padding='max_length',  # Padding a longitud máxima
+            truncation=True,
+            max_length=77  # Longitud máxima de CLIP
         )
         
         return {
             'pixel_values': inputs['pixel_values'].squeeze(0),
-            'input_ids': inputs['input_ids'],
-            'attention_mask': inputs['attention_mask']
+            'input_ids': inputs['input_ids'].squeeze(0),  # Shape: [77]
+            'attention_mask': inputs['attention_mask'].squeeze(0)  # Shape: [77]
         }
 
 # ============================================================================
 # FINE-TUNING
 # ============================================================================
+
+def collate_fn_clip(batch):
+    """Función personalizada para hacer batching - ahora todos tienen el mismo tamaño"""
+    return {
+        'pixel_values': torch.stack([item['pixel_values'] for item in batch]),
+        'input_ids': torch.stack([item['input_ids'] for item in batch]),
+        'attention_mask': torch.stack([item['attention_mask'] for item in batch])
+    }
 
 class ContrastiveLoss(nn.Module):
     """Pérdida contrastiva para CLIP"""
@@ -1160,8 +1201,8 @@ def train_epoch(model, dataloader, optimizer, criterion, device):
         # Forward pass
         outputs = model(
             pixel_values=pixel_values,
-            input_ids=input_ids.squeeze(1),
-            attention_mask=attention_mask.squeeze(1)
+            input_ids=input_ids,
+            attention_mask=attention_mask
         )
         
         # Calcular pérdida
@@ -1189,8 +1230,8 @@ def validate(model, dataloader, criterion, device):
             
             outputs = model(
                 pixel_values=pixel_values,
-                input_ids=input_ids.squeeze(1),
-                attention_mask=attention_mask.squeeze(1)
+                input_ids=input_ids,
+                attention_mask=attention_mask
             )
             
             loss = criterion(outputs.image_embeds, outputs.text_embeds)
@@ -1227,7 +1268,7 @@ def finetune_model(epochs=5, batch_size=8, learning_rate=1e-5, min_quality=2, mi
     
     # Crear dataset
     status_text.text("📊 Creando dataset...")
-    dataset = GeoDataset(annotations, processor, min_quality, min_confidence)
+    dataset = GeoDatasetV2(annotations, processor, min_quality, min_confidence)
     
     if len(dataset) < 20:
         st.error(f"❌ Dataset muy pequeño: {len(dataset)} imágenes")
@@ -1242,8 +1283,8 @@ def finetune_model(epochs=5, batch_size=8, learning_rate=1e-5, min_quality=2, mi
     train_size = len(dataset) - val_size
     train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
     
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn_clip)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, collate_fn=collate_fn_clip)
     
     log_container.info(f"📈 Train: {len(train_dataset)} | Val: {len(val_dataset)}")
     
