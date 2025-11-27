@@ -434,8 +434,8 @@ def show_annotation_interface():
                         except Exception as del_err:
                             print(f"⚠️ No se pudo eliminar archivo: {del_err}")
                         
-                        # No avanzar índice - el rerun reconstruirá la lista balanceada
-                        # Si había otra imagen del mismo estado, aparecerá en la misma posición
+                        # Forzar recarga completa
+                        st.session_state.clear()
                         st.rerun()
                 
                 with col_auto2:
@@ -467,10 +467,25 @@ def show_annotation_interface():
         else:
             st.error(f"❌ Imagen no encontrada: {current_img.get('filename', 'sin nombre')}")
             st.caption(f"No se pudo cargar desde Supabase ni desde archivo local")
-            if st.button("Marcar como perdida y continuar", key='mark_missing'):
-                annotations.setdefault('deleted_images', []).append(current_img.get('filename', ''))
+            if st.button("🗑️ Marcar como perdida y continuar", key='mark_missing'):
+                current_filename = current_img.get('filename', '')
+                
+                # Agregar a lista de eliminadas en JSON
+                annotations.setdefault('deleted_images', []).append(current_filename)
                 save_annotations(annotations)
-                # No avanzar índice - reconstruir lista
+                
+                # Guardar en archivo de texto para lectura rápida
+                deleted_file = MINING_DIR / 'deleted_images.txt'
+                with open(deleted_file, 'a', encoding='utf-8') as f:
+                    f.write(f"{current_filename}\n")
+                
+                st.success(f"🗑️ Imagen marcada como perdida")
+                
+                # Limpiar el estado de la sesión para forzar recarga completa
+                if 'current_img_index' in st.session_state:
+                    del st.session_state.current_img_index
+                
+                # Recargar completamente
                 st.rerun()
             return
     
@@ -551,7 +566,7 @@ def show_annotation_interface():
         )
         
         # Anotador fijo
-        annotator = "Emma"
+        annotator = st.session_state.current_user
         
         st.divider()
         
@@ -607,7 +622,7 @@ def show_annotation_interface():
                     
                     st.success("✅ Anotación guardada (CSV ✓ + JSON ✓)")
                     
-                    # Recargar interfaz para siguiente imagen en la cola
+                    # Limpiar cualquier estado temporal y recargar
                     st.rerun()
         
         with col_b2:
@@ -630,13 +645,13 @@ def show_annotation_interface():
                 
                 st.success(f"🗑️ Imagen eliminada")
                 
-                # Recargar interfaz para siguiente imagen
+                # Limpiar estado y recargar
                 st.rerun()
     
     # Navegación con teclado
     st.markdown("---")
     st.caption("💡 **Tip:** Usa las teclas ←/→ para navegar entre imágenes")
-
+    
 def save_annotations(annotations):
     """Guarda anotaciones con backup"""
     try:
