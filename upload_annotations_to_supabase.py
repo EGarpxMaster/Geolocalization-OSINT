@@ -60,10 +60,24 @@ def upload_annotations():
         print("✅ Todas las anotaciones ya están en Supabase!")
         return
     
-    # 5. Preparar datos para Supabase
+    # 5. Preparar datos para Supabase (obteniendo image_id desde image_metadata)
     to_insert = []
     
+    # Primero, obtener todos los image_id de una vez para eficiencia
+    print("🔍 Obteniendo image_id desde image_metadata...")
+    filenames = [ann['filename'] for ann in new_annotations]
+    metadata_result = supabase.table('image_metadata').select('id, filename').in_('filename', filenames).execute()
+    filename_to_id = {row['filename']: row['id'] for row in metadata_result.data}
+    print(f"✅ Encontrados {len(filename_to_id)} image_id\n")
+    
     for ann in new_annotations:
+        # Buscar image_id
+        image_id = filename_to_id.get(ann['filename'])
+        
+        if not image_id:
+            print(f"⚠️  Saltando {ann['filename']} - no tiene image_id en image_metadata")
+            continue
+        
         # Detectar formato: JSON tiene 'elements' como dict, CSV tiene columnas booleanas
         if 'elements' in ann and isinstance(ann['elements'], dict):
             # Formato JSON - convertir dict de elements a columnas booleanas
@@ -94,7 +108,11 @@ def upload_annotations():
             has_text = ann.get('text', '').lower() == 'true'
             custom_tags = [tag.strip() for tag in ann.get('custom_tags', '').split(',') if tag.strip()]
         
+        # Convertir custom_tags a string separado por comas
+        custom_tags_str = ','.join(custom_tags) if isinstance(custom_tags, list) else custom_tags
+        
         to_insert.append({
+            'image_id': image_id,
             'filename': ann['filename'],
             'city': ann.get('city', ''),
             'state': ann.get('state', ''),
@@ -112,7 +130,7 @@ def upload_annotations():
             'has_people': has_people,
             'has_vehicles': has_vehicles,
             'has_text': has_text,
-            'custom_tags': custom_tags,
+            'custom_tags': custom_tags_str,
             'notes': ann.get('notes', ''),
             'annotated_at': ann.get('annotated_at', ''),
             'annotated_by': ann.get('annotated_by', 'Unknown')

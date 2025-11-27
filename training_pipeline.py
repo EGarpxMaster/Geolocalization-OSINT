@@ -198,10 +198,15 @@ def main_interface():
                 metadata = json.load(f)
             st.metric("Imágenes minadas", len(metadata.get('images', [])))
         
-        if ANNOTATIONS_FILE.exists():
-            with open(ANNOTATIONS_FILE, 'r', encoding='utf-8') as f:
-                annotations = json.load(f)
-            st.metric("Imágenes anotadas", len(annotations.get('images', [])))
+        # Contar anotaciones desde Supabase
+        if USE_SUPABASE:
+            try:
+                result = supabase.table('annotations').select('filename', count='exact').execute()
+                st.metric("Imágenes anotadas", result.count)
+            except:
+                st.metric("Imágenes anotadas", "N/A")
+        else:
+            st.metric("Imágenes anotadas", "Supabase OFF")
     
     # Mostrar interfaz según modo
     if mode == "📝 Anotación":
@@ -277,49 +282,35 @@ def show_annotation_interface():
     st.markdown("---")
     st.markdown("Sistema de asignación: **Round Robin por Estado** - Cada usuario trabaja en los mismos estados pero con diferentes imágenes.")
     
-    # Cargar datos desde Supabase (preferido) o CSV/JSON (fallback)
-    if USE_SUPABASE:
-        images = load_metadata_from_supabase()
-    elif METADATA_CSV.exists():
-        images = load_metadata_from_csv()
-    elif METADATA_FILE.exists():
-        images = load_metadata_from_json()
-    else:
-        st.error("❌ No hay imágenes descargadas. Ejecuta primero `mining_pipeline.py`")
-        st.code("python mining_pipeline.py --mode all --images 20", language="bash")
+    # Cargar datos desde Supabase únicamente
+    if not USE_SUPABASE:
+        st.error("❌ Supabase deshabilitado. Activa USE_SUPABASE en el código.")
         return
+    
+    images = load_metadata_from_supabase()
     
     if not images:
         st.warning("⚠️ No hay imágenes para anotar")
         return
     
-    # Cargar anotaciones desde CSV (principal) y JSON (secundario para compatibilidad)
+    # Cargar anotaciones desde Supabase únicamente
     annotated_files = set()
     deleted_files = set()
     
-    # Leer desde CSV primero (fuente de verdad)
-    if ANNOTATIONS_CSV.exists():
-        import csv
-        with open(ANNOTATIONS_CSV, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                annotated_files.add(row['filename'])
+    # Leer anotaciones desde Supabase
+    try:
+        result = supabase.table('annotations').select('filename').execute()
+        annotated_files = {row['filename'] for row in result.data}
+    except Exception as e:
+        st.warning(f"⚠️ Error al cargar anotaciones desde Supabase: {e}")
     
-    # Leer imágenes eliminadas desde archivo de texto
-    deleted_file = MINING_DIR / 'deleted_images.txt'
-    if deleted_file.exists():
-        with open(deleted_file, 'r', encoding='utf-8') as f:
-            deleted_files = {line.strip() for line in f if line.strip()}
-    
-    # Cargar JSON para mantener estructura completa (se guarda en paralelo)
-    if ANNOTATIONS_FILE.exists():
-        with open(ANNOTATIONS_FILE, 'r', encoding='utf-8') as f:
-            annotations = json.load(f)
-        # Sincronizar deleted_images con el archivo de texto
-        if deleted_files:
-            annotations['deleted_images'] = list(deleted_files)
-    else:
-        annotations = {'images': [], 'deleted_images': list(deleted_files)}
+    # Leer imágenes eliminadas desde Supabase
+    try:
+        result = supabase.table('deleted_images').select('filename').execute()
+        deleted_files = {row['filename'] for row in result.data}
+    except Exception as e:
+        # Puede fallar por RLS policy, no crítico
+        pass
     
     # Filtrar imágenes pendientes (no anotadas, no eliminadas)
     pending_images = [
@@ -419,13 +410,17 @@ def show_annotation_interface():
                     if st.button("🗑️ Eliminar automáticamente", type="primary", key='delete_corrupt'):
                         current_filename = current_img.get('filename', '')
                         
-                        # Marcar como eliminada
-                        annotations.setdefault('deleted_images', []).append(current_filename)
-                        save_annotations(annotations)
-                        
-                        deleted_file = MINING_DIR / 'deleted_images.txt'
-                        with open(deleted_file, 'a', encoding='utf-8') as f:
-                            f.write(f"{current_filename}\n")
+                        # Marcar como eliminada en Supabase
+                        if USE_SUPABASE:
+                            try:
+                                supabase.table('deleted_images').insert({
+                                    'filename': current_filename,
+                                    'deleted_at': datetime.now().isoformat(),
+                                    'deleted_by': st.session_state.current_user,
+                                    'reason': 'Imagen corrupta o inválida'
+                                }).execute()
+                            except Exception as db_err:
+                                print(f"⚠️ Error al marcar en Supabase: {db_err}")
                         
                         # Eliminar archivo físico corrupto
                         try:
@@ -470,16 +465,20 @@ def show_annotation_interface():
             if st.button("🗑️ Marcar como perdida y continuar", key='mark_missing'):
                 current_filename = current_img.get('filename', '')
                 
-                # Agregar a lista de eliminadas en JSON
-                annotations.setdefault('deleted_images', []).append(current_filename)
-                save_annotations(annotations)
-                
-                # Guardar en archivo de texto para lectura rápida
-                deleted_file = MINING_DIR / 'deleted_images.txt'
-                with open(deleted_file, 'a', encoding='utf-8') as f:
-                    f.write(f"{current_filename}\n")
-                
-                st.success(f"🗑️ Imagen marcada como perdida")
+                # Marcar como eliminada en Supabase
+                if USE_SUPABASE:
+                    try:
+                        supabase.table('deleted_images').insert({
+                            'filename': current_filename,
+                            'deleted_at': datetime.now().isoformat(),
+                            'deleted_by': st.session_state.current_user,
+                            'reason': 'Archivo no encontrado'
+                        }).execute()
+                        st.success(f"🗑️ Imagen marcada como perdida en Supabase")
+                    except Exception as db_err:
+                        st.error(f"❌ Error al marcar en Supabase: {db_err}")
+                else:
+                    st.warning("⚠️ Supabase deshabilitado - eliminación NO guardada")
                 
                 # Limpiar el estado de la sesión para forzar recarga completa
                 if 'current_img_index' in st.session_state:
@@ -585,14 +584,13 @@ def show_annotation_interface():
                 if already_annotated:
                     st.warning(f"⚠️ Esta imagen ya fue anotada anteriormente. Usa '⏭️ Omitir' para pasar a la siguiente.")
                 else:
-                    # Guardar anotación (usar city_target/state_target si existen)
+                    # Guardar SOLO en Supabase
                     annotation = {
                         'filename': current_filename,
                         'city': current_img.get('city_target', current_img.get('city', '')),
                         'state': current_img.get('state_target', current_img.get('state', '')),
                         'lat': current_img.get('lat', 0),
                         'lon': current_img.get('lon', 0),
-                        'source': current_img.get('source', ''),
                         'correct_city': correct_city.split()[0],  # ✅, ❌, o 🤔
                         'quality': quality,
                         'custom_tags': [tag.strip() for tag in custom_tags.split(',') if tag.strip()],
@@ -610,48 +608,49 @@ def show_annotation_interface():
                         'confidence': confidence,
                         'notes': notes,
                         'annotated_at': datetime.now().isoformat(),
-                        'annotated_by': st.session_state.current_user  # ✅ Usuario actual
+                        'annotated_by': st.session_state.current_user
                     }
                     
-                    # Guardar primero en CSV (fuente principal)
-                    save_annotation_to_csv(annotation)
-                    
-                    # Guardar también en JSON (respaldo/compatibilidad)
-                    annotations['images'].append(annotation)
-                    save_annotations(annotations)
-                    
-                    # Guardar en Supabase si está habilitado
                     if USE_SUPABASE:
                         try:
-                            supabase.table('annotations').insert({
-                                'filename': annotation['filename'],
-                                'city': annotation['city'],
-                                'state': annotation['state'],
-                                'lat': annotation['lat'],
-                                'lon': annotation['lon'],
-                                'correct_city': annotation['correct_city'],
-                                'quality': annotation['quality'],
-                                'confidence': annotation['confidence'],
-                                'has_landmarks': annotation['elements'].get('landmarks', False),
-                                'has_architecture': annotation['elements'].get('architecture', False),
-                                'has_signs': annotation['elements'].get('signs', False),
-                                'has_nature': annotation['elements'].get('nature', False),
-                                'has_urban': annotation['elements'].get('urban', False),
-                                'has_beach': annotation['elements'].get('beach', False),
-                                'has_people': annotation['elements'].get('people', False),
-                                'has_vehicles': annotation['elements'].get('vehicles', False),
-                                'has_text': annotation['elements'].get('text', False),
-                                'custom_tags': annotation['custom_tags'],
-                                'notes': annotation['notes'],
-                                'annotated_at': annotation['annotated_at'],
-                                'annotated_by': annotation['annotated_by']
-                            }).execute()
-                            st.success("✅ Anotación guardada (CSV ✓ + JSON ✓ + Supabase ✓)")
+                            # Obtener el image_id desde image_metadata usando filename
+                            metadata_result = supabase.table('image_metadata').select('id').eq('filename', annotation['filename']).execute()
+                            
+                            if not metadata_result.data:
+                                st.error(f"❌ No se encontró image_id para {annotation['filename']} en image_metadata")
+                            else:
+                                image_id = metadata_result.data[0]['id']
+                                
+                                # Insertar anotación con image_id
+                                supabase.table('annotations').insert({
+                                    'image_id': image_id,
+                                    'filename': annotation['filename'],
+                                    'city': annotation['city'],
+                                    'state': annotation['state'],
+                                    'lat': annotation['lat'],
+                                    'lon': annotation['lon'],
+                                    'correct_city': annotation['correct_city'],
+                                    'quality': annotation['quality'],
+                                    'confidence': annotation['confidence'],
+                                    'has_landmarks': annotation['elements'].get('landmarks', False),
+                                    'has_architecture': annotation['elements'].get('architecture', False),
+                                    'has_signs': annotation['elements'].get('signs', False),
+                                    'has_nature': annotation['elements'].get('nature', False),
+                                    'has_urban': annotation['elements'].get('urban', False),
+                                    'has_beach': annotation['elements'].get('beach', False),
+                                    'has_people': annotation['elements'].get('people', False),
+                                    'has_vehicles': annotation['elements'].get('vehicles', False),
+                                    'has_text': annotation['elements'].get('text', False),
+                                    'custom_tags': ','.join(annotation['custom_tags']),
+                                    'notes': annotation['notes'],
+                                    'annotated_at': annotation['annotated_at'],
+                                    'annotated_by': annotation['annotated_by']
+                                }).execute()
+                                st.success("✅ Anotación guardada en Supabase")
                         except Exception as e:
-                            st.warning(f"⚠️ Guardado en Supabase falló: {e}")
-                            st.success("✅ Anotación guardada (CSV ✓ + JSON ✓)")
+                            st.error(f"❌ Error guardando en Supabase: {e}")
                     else:
-                        st.success("✅ Anotación guardada (CSV ✓ + JSON ✓)")
+                        st.warning("⚠️ Supabase deshabilitado - anotación NO guardada")
                     
                     # Limpiar cualquier estado temporal y recargar
                     st.rerun()
@@ -665,16 +664,7 @@ def show_annotation_interface():
             if st.button("🗑️ Eliminar", width='stretch', help="Eliminar imagen de baja calidad"):
                 current_filename = current_img.get('filename', '')
                 
-                # Agregar a lista de eliminadas en JSON
-                annotations.setdefault('deleted_images', []).append(current_filename)
-                save_annotations(annotations)
-                
-                # Guardar en archivo de texto para lectura rápida
-                deleted_file = MINING_DIR / 'deleted_images.txt'
-                with open(deleted_file, 'a', encoding='utf-8') as f:
-                    f.write(f"{current_filename}\n")
-                
-                # Guardar en Supabase si está habilitado
+                # Guardar SOLO en Supabase
                 if USE_SUPABASE:
                     try:
                         supabase.table('deleted_images').insert({
@@ -682,12 +672,11 @@ def show_annotation_interface():
                             'deleted_at': datetime.now().isoformat(),
                             'deleted_by': st.session_state.current_user
                         }).execute()
-                        st.success(f"🗑️ Imagen eliminada (Local ✓ + Supabase ✓)")
+                        st.success(f"🗑️ Imagen eliminada en Supabase")
                     except Exception as e:
-                        # Puede fallar por RLS policy, pero no es crítico
-                        st.success(f"🗑️ Imagen eliminada (Local ✓)")
+                        st.error(f"❌ Error eliminando en Supabase: {e}")
                 else:
-                    st.success(f"🗑️ Imagen eliminada")
+                    st.warning("⚠️ Supabase deshabilitado - eliminación NO guardada")
                 
                 # Limpiar estado y recargar
                 st.rerun()
@@ -695,82 +684,18 @@ def show_annotation_interface():
     # Navegación con teclado
     st.markdown("---")
     st.caption("💡 **Tip:** Usa las teclas ←/→ para navegar entre imágenes")
-    
-def save_annotations(annotations):
-    """Guarda anotaciones con backup"""
-    try:
-        # Crear backup
-        if ANNOTATIONS_FILE.exists():
-            backup_file = ANNOTATIONS_FILE.with_suffix('.backup.json')
-            import shutil
-            shutil.copy2(ANNOTATIONS_FILE, backup_file)
-        
-        # Guardar nuevo
-        with open(ANNOTATIONS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(annotations, f, indent=2, ensure_ascii=False)
-        
-        print(f"✅ Anotaciones JSON guardadas: {len(annotations.get('images', []))} anotaciones")
-    except Exception as e:
-        st.error(f"❌ Error guardando anotaciones JSON: {e}")
-        import traceback
-        traceback.print_exc()
 
-def save_annotation_to_csv(annotation):
-    """Guarda una anotación en formato CSV para fine-tuning"""
-    import csv
-    
-    # Crear CSV si no existe
-    file_exists = ANNOTATIONS_CSV.exists()
-    
-    try:
-        with open(ANNOTATIONS_CSV, 'a', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f, quoting=csv.QUOTE_NONNUMERIC)
-            
-            # Escribir encabezado si es nuevo archivo
-            if not file_exists:
-                writer.writerow([
-                    'filename', 'city', 'state', 'lat', 'lon',
-                    'correct_city', 'quality', 'confidence',
-                    'landmarks', 'architecture', 'signs', 'nature', 'urban', 'beach',
-                    'people', 'vehicles', 'text', 'custom_tags', 'notes',
-                    'annotated_at', 'annotated_by'
-                ])
-            
-            # Escribir datos
-            elements = annotation.get('elements', {})
-            # Limpiar tags y notas de saltos de línea
-            tags_str = ','.join(annotation.get('custom_tags', [])).replace('\n', ' ').replace('\r', ' ')
-            notes_str = annotation.get('notes', '').replace('\n', ' ').replace('\r', ' ')
-            
-            writer.writerow([
-                annotation.get('filename', ''),
-                annotation.get('city', ''),
-                annotation.get('state', ''),
-                annotation.get('lat', 0.0),
-                annotation.get('lon', 0.0),
-                annotation.get('correct_city', ''),
-                annotation.get('quality', 0),
-                annotation.get('confidence', 0),
-                elements.get('landmarks', False),
-                elements.get('architecture', False),
-                elements.get('signs', False),
-                elements.get('nature', False),
-                elements.get('urban', False),
-                elements.get('beach', False),
-                elements.get('people', False),
-                elements.get('vehicles', False),
-                elements.get('text', False),
-                tags_str,
-                notes_str,
-                annotation.get('annotated_at', ''),
-                annotation.get('annotated_by', 'Emma')
-            ])
-            
-            print(f"✅ Anotación CSV guardada: {annotation.get('filename', '')}")
-    except Exception as e:
-        print(f"❌ Error guardando CSV: {e}")
-        import traceback
-        traceback.print_exc()
+# ============================================================================
+# FUNCIONES OBSOLETAS (ya no se usan - solo Supabase ahora)
+# ============================================================================
+
+# def save_annotations(annotations):
+#     """OBSOLETO - Ahora solo se usa Supabase"""
+#     pass
+
+# def save_annotation_to_csv(annotation):
+#     """OBSOLETO - Ahora solo se usa Supabase"""
+#     pass
 
 
 def show_training_interface():
@@ -948,29 +873,35 @@ def show_statistics_interface():
     
     st.header("📊 Estadísticas del Dataset")
     
-    # Cargar datos
+    if not USE_SUPABASE:
+        st.error("❌ Supabase deshabilitado. Activa USE_SUPABASE para ver estadísticas.")
+        return
+    
+    # Cargar datos desde Supabase
     stats = {}
     
-    if METADATA_CSV.exists():
-        with open(METADATA_CSV, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            images = list(reader)
-            stats['total_images'] = len(images)
-            stats['total_cities'] = len(set(img['city'] for img in images if img.get('city')))
-    elif METADATA_FILE.exists():
-        with open(METADATA_FILE, 'r', encoding='utf-8') as f:
-            metadata = json.load(f)
-        stats['total_images'] = len(metadata.get('images', []))
-        stats['total_cities'] = len(metadata.get('cities', {}))
-    
-    if ANNOTATIONS_FILE.exists():
-        with open(ANNOTATIONS_FILE, 'r', encoding='utf-8') as f:
-            annotations = json.load(f)
-        stats['annotated'] = len(annotations.get('images', []))
-        stats['deleted'] = len(annotations.get('deleted_images', []))
-    else:
-        stats['annotated'] = 0
-        stats['deleted'] = 0
+    try:
+        # Total de imágenes en metadata
+        result = supabase.table('image_metadata').select('*', count='exact').execute()
+        stats['total_images'] = result.count
+        images_data = result.data
+        stats['total_cities'] = len(set(f"{img['city']}, {img['state']}" for img in images_data if img.get('city')))
+        
+        # Anotaciones
+        result = supabase.table('annotations').select('*').execute()
+        stats['annotated'] = len(result.data)
+        annotations_data = result.data
+        
+        # Eliminadas
+        try:
+            result = supabase.table('deleted_images').select('filename', count='exact').execute()
+            stats['deleted'] = result.count
+        except:
+            stats['deleted'] = 0
+            
+    except Exception as e:
+        st.error(f"❌ Error cargando estadísticas: {e}")
+        return
     
     # Métricas principales
     col1, col2, col3, col4 = st.columns(4)
@@ -979,24 +910,17 @@ def show_statistics_interface():
     col3.metric("🗑️ Eliminadas", stats.get('deleted', 0))
     col4.metric("🏙️ Ciudades", stats.get('total_cities', 0))
     
-    if not ANNOTATIONS_FILE.exists():
-        st.info("No hay estadísticas de anotaciones disponibles")
+    if not annotations_data:
+        st.info("Aún no hay imágenes anotadas")
         return
     
     # Gráficos
     st.divider()
     
-    with open(ANNOTATIONS_FILE, 'r', encoding='utf-8') as f:
-        annotations = json.load(f)
-    
-    if not annotations.get('images'):
-        st.info("Aún no hay imágenes anotadas")
-        return
-    
     # Distribución de calidad
     st.subheader("📈 Distribución de Calidad")
     quality_dist = {}
-    for ann in annotations['images']:
+    for ann in annotations_data:
         q = ann.get('quality', 0)
         quality_dist[q] = quality_dist.get(q, 0) + 1
     
@@ -1009,21 +933,24 @@ def show_statistics_interface():
     # Distribución por ciudad
     st.subheader("🗺️ Top 10 Ciudades Anotadas")
     city_dist = {}
-    for ann in annotations['images']:
+    for ann in annotations_data:
         city_key = f"{ann.get('city')}, {ann.get('state')}"
         city_dist[city_key] = city_dist.get(city_key, 0) + 1
     
     top_cities = sorted(city_dist.items(), key=lambda x: x[1], reverse=True)[:10]
     city_df = pd.DataFrame(top_cities, columns=['Ciudad', 'Anotaciones'])
-    st.dataframe(city_df, width='stretch', hide_index=True)
+    st.dataframe(city_df, use_container_width=True, hide_index=True)
     
     # Elementos detectados
     st.subheader("👁️ Elementos Más Comunes")
     elements_count = {}
-    for ann in annotations['images']:
-        for element, value in ann.get('elements', {}).items():
-            if value:
-                elements_count[element] = elements_count.get(element, 0) + 1
+    element_fields = ['has_landmarks', 'has_architecture', 'has_signs', 'has_nature', 
+                     'has_urban', 'has_beach', 'has_people', 'has_vehicles', 'has_text']
+    for ann in annotations_data:
+        for field in element_fields:
+            if ann.get(field):
+                element_name = field.replace('has_', '').capitalize()
+                elements_count[element_name] = elements_count.get(element_name, 0) + 1
     
     if elements_count:
         elements_df = pd.DataFrame([
@@ -1035,15 +962,18 @@ def show_statistics_interface():
     # Etiquetas personalizadas más usadas
     st.subheader("🏷️ Etiquetas Personalizadas Populares")
     tags_count = {}
-    for ann in annotations['images']:
-        for tag in ann.get('custom_tags', []):
-            if tag:
+    for ann in annotations_data:
+        custom_tags = ann.get('custom_tags', '')
+        if custom_tags:
+            # custom_tags es un string separado por comas en Supabase
+            tags = [tag.strip() for tag in custom_tags.split(',') if tag.strip()]
+            for tag in tags:
                 tags_count[tag] = tags_count.get(tag, 0) + 1
     
     if tags_count:
         top_tags = sorted(tags_count.items(), key=lambda x: x[1], reverse=True)[:15]
         tags_df = pd.DataFrame(top_tags, columns=['Etiqueta', 'Uso'])
-        st.dataframe(tags_df, width='stretch', hide_index=True)
+        st.dataframe(tags_df, use_container_width=True, hide_index=True)
     else:
         st.info("No se han agregado etiquetas personalizadas aún")
 
