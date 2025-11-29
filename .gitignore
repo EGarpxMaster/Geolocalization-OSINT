@@ -39,6 +39,9 @@ data/mining/images/
 *.gif
 *.avif
 
+# Permitir CSVs de backup de Supabase
+!data/supabase_backup/*.csv
+
 # Model files (descargar desde Google Drive)
 model/*.pth
 model/checkpoints/*.pth
