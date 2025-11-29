@@ -39,10 +39,16 @@ data/mining/images/
 *.gif
 *.avif
 
-# Model files
+# Model files (descargar desde Google Drive)
 model/*.pth
 model/checkpoints/*.pth
 !model/.gitkeep
+
+# Backups y archivos temporales
+*.backup.*
+*.tmp
+*.temp
+data/mining/*.backup.*
 
 # Logs
 *.log

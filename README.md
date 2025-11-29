@@ -10,6 +10,22 @@ Herramienta OSINT para geolocalizar fotografías en México mediante:
 - **Fine-tuning**: Mejora con datos anotados manualmente
 - **Fuentes abiertas**: Wikimedia Commons, Wikipedia, Pexels
 
+## 🎯 Modelo Pre-entrenado (Google Drive)
+
+Si deseas usar el modelo ya entrenado sin realizar fine-tuning, descárgalo aquí:
+
+**📦 [Descargar Modelo Fine-tuned](https://drive.google.com/drive/folders/1SMQZTZ1U_prWongTUwaCTURtpvYMaG8x?usp=sharing)**
+
+Incluye:
+- `modelo.pth` - Embeddings de 68 ciudades mexicanas
+- `modelo_finetuned.pth` - Modelo CLIP entrenado con 100+ anotaciones
+- `checkpoints/` - Checkpoints de entrenamiento por época
+
+**Instrucciones:**
+1. Descarga los archivos del Drive
+2. Colócalos en la carpeta `model/` de este proyecto
+3. Ejecuta `streamlit run Geolocalizador.py`
+
 ## 🚀 Inicio Rápido
 
 ### 1. Instalación
@@ -104,27 +120,48 @@ streamlit run Geolocalizador.py
 
 ```
 Geolocalization-OSINT/
-├── mining_pipeline.py          # Minería de imágenes (unificado)
-├── training_pipeline.py         # Anotación + Fine-tuning (unificado)
-├── Geolocalizador.py           # Interfaz OSINT principal
-├── build_model.py              # Generador de embeddings base
-├── requirements.txt            # Dependencias Python
-├── README_UNIFIED.md           # Esta documentación
+├── 📄 Archivos principales (ESENCIALES)
+│   ├── Geolocalizador.py           # Interfaz OSINT principal
+│   ├── mining_pipeline.py          # Minería de imágenes
+│   ├── training_pipeline.py        # Anotación + Fine-tuning
+│   ├── build_model.py              # Generador de embeddings base
+│   ├── requirements.txt            # Dependencias Python
+│   └── README.md                   # Esta documentación
 │
-├── data/
-│   ├── cities_mx.csv          # 68 ciudades de México
-│   └── mining/                # Datos de minería
-│       ├── images/            # Imágenes descargadas
-│       ├── metadata.json      # Metadata de imágenes
-│       └── annotations.json   # Anotaciones manuales
+├── 📊 Datos
+│   ├── data/cities_mx.csv          # 68 ciudades de México
+│   └── data/mining/                # Datos de minería
+│       ├── images/                 # Imágenes descargadas
+│       ├── metadata.json           # Metadata de imágenes
+│       └── annotations.json        # Anotaciones manuales (Supabase)
 │
-├── model/
-│   ├── modelo.pth             # Embeddings de ciudades
-│   ├── modelo_finetuned.pth   # Modelo CLIP fine-tuned
-│   └── checkpoints/           # Checkpoints de entrenamiento
+├── 🤖 Modelos (Descargar desde Google Drive)
+│   ├── model/modelo.pth            # Embeddings de ciudades
+│   ├── model/modelo_finetuned.pth  # Modelo CLIP fine-tuned
+│   └── model/checkpoints/          # Checkpoints de entrenamiento
 │
-└── photos/                    # Fotos de prueba
+├── 🔧 Scripts opcionales (Supabase)
+│   ├── supabase_client.py          # Cliente de Supabase
+│   ├── upload_annotations_to_supabase.py
+│   ├── download_annotations_from_supabase.py
+│   ├── fix_annotations_image_id.py
+│   └── clean_orphan_annotations.py
+│
+└── 📸 Extras
+    └── photos/                     # Fotos de prueba
 ```
+
+### Archivos esenciales (mínimo para funcionar):
+- `Geolocalizador.py` - Interfaz principal
+- `build_model.py` - Generar modelo base
+- `requirements.txt` - Instalar dependencias
+- `data/cities_mx.csv` - Lista de ciudades
+- `model/modelo.pth` - [Descargar del Drive](https://drive.google.com/drive/folders/1SMQZTZ1U_prWongTUwaCTURtpvYMaG8x?usp=sharing)
+
+### Archivos opcionales (para fine-tuning):
+- `mining_pipeline.py` - Solo si quieres minar más imágenes
+- `training_pipeline.py` - Solo si quieres entrenar
+- Scripts de Supabase - Solo si usas base de datos cloud
 
 ## 🔧 Configuración Avanzada
 
@@ -137,6 +174,18 @@ python mining_pipeline.py --mode city --city "Guadalajara" --images 30
 # Ver estadísticas detalladas
 python mining_pipeline.py --check-progress
 ```
+
+**Nombres de archivos optimizados:**
+El sistema genera nombres únicos automáticamente:
+```
+{fuente}_{ciudad}_{estado}_{índice}_{timestamp}.jpg
+Ejemplo: wikimedia_Guadalajara_Jalisco_5_1732901234.jpg
+```
+
+Esto previene:
+- ✅ Conflictos por duplicados
+- ✅ Sobrescrituras accidentales
+- ✅ Problemas con caracteres especiales (sanitizados automáticamente)
 
 ### Fine-tuning Personalizado
 
